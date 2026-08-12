@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ковалёвы · Ланские — семейный архив</title>
+<link rel="stylesheet" href="./styles.css">
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js" crossorigin></script>
+<script src="https://unpkg.com/topojson-client@3.1.0/dist/topojson-client.min.js" crossorigin></script>
+<style>
+  :root { --font-heading: "Bitter", Georgia, serif; --font-body: "Manrope", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--color-surface); }
+  body, #root { height: 100vh; overflow: hidden; }
+  h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: 700; }
+  a { color: var(--color-accent); text-decoration: none; }
+  a:hover { color: var(--color-accent-700); text-decoration: underline; }
+  input, textarea, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #201e1d22; }
+  [data-print-layer] { display: none; }
+  @media print {
+    html, body { background: #fff !important; }
+    body[data-printing] { overflow: visible !important; height: auto !important; }
+    body[data-printing] #root { display: none !important; }
+    body[data-printing] [data-print-layer] { display: block !important; }
+    body[data-printing] .om-sheet { break-after: page; page-break-after: always; }
+    body[data-printing] .om-sheet:last-child { break-after: auto; page-break-after: auto; }
+    @page { margin: 8mm; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
