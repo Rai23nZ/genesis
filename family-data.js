@@ -77,6 +77,18 @@ export async function apiLogin(role, login, secret) {
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, login, secret }) });
 }
 
+// Импорт на сервере. dryRun: true — разбор без записи, чтобы показать отчёт до
+// того, как что-то сохранено. Без сервера импорт не сохраняется вообще, поэтому
+// вызывать это в демонстрационном режиме бессмысленно.
+export async function apiImport(name, text, { dryRun = false, wipe = false, title = "" } = {}) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/import", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, text, dryRun, wipe, title })
+  });
+}
+
 export async function apiLogout() {
   const base = apiBase();
   if (!base) return null;

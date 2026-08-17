@@ -203,16 +203,52 @@ class App extends React.Component {
     r.onload = () => {
       try {
         const txt = String(r.result);
+        // При подключённом сервере разбор и запись выполняет он: иначе импорт
+        // оседал бы в памяти вкладки и исчезал при перезагрузке страницы.
+        if (HAS_API) return this.importToServer(f.name, txt);
         const res = /\.ged/i.test(f.name) ? this.m.parseGedcom(txt) : this.m.parseJson(txt);
         if (!res.people.length) return this.flash("В файле не найдено записей о людях");
         const patch = { people: res.people, sel: res.people[0].id };
         if (res.title) patch.title = res.title;
         this.setState(patch);
-        this.flash("Импорт " + f.name + ": " + res.people.length + " человек" + (res.families ? ", " + res.families + " семей" : "") + (res.title ? " · название из файла" : " · название в файле не указано, поправьте в шапке"));
+        this.flash("Импорт " + f.name + " (демонстрационный режим: в памяти вкладки, до перезагрузки): " + res.people.length + " человек");
       } catch (err) { this.flash("Не удалось разобрать файл: " + err.message); }
     };
     r.readAsText(f);
     e.target.value = "";
+  }
+
+  // Импорт на сервер в два захода. Сначала разбор без записи: признак «живущий»
+  // решает, кого увидит гость, поэтому число таких карточек показывается до
+  // того, как что-то сохранено, а не после.
+  importToServer(name, text) {
+    this.flash("Разбор файла на сервере…");
+    return this.m.apiImport(name, text, { dryRun: true }).then((rep) => {
+      if (!rep.accepted) {
+        return this.flash("Записей о людях не найдено" + (rep.rejected.length ? ". Отклонено: " + rep.rejected.length : ""));
+      }
+      const shown = rep.living.slice(0, 15)
+        .map(p => "  " + p.name + (p.year ? " (р. " + p.year + ")" : " (год рождения неизвестен)"));
+      if (rep.living.length > shown.length) shown.push("  … ещё " + (rep.living.length - shown.length));
+      const text0 = [
+        "Файл: " + name,
+        "Принято записей: " + rep.accepted + (rep.families ? ", семей: " + rep.families : ""),
+        "Отклонено: " + rep.rejected.length + (rep.rejected.length ? " — " + rep.rejected.slice(0, 3).join("; ") : ""),
+        "",
+        "Помечены живущими, гостям не отдаются: " + rep.living.length,
+        shown.join("\n"),
+        "",
+        "Записать в базу? Карточки с теми же идентификаторами будут заменены."
+      ].filter(Boolean).join("\n");
+      if (!window.confirm(text0)) return this.flash("Импорт отменён: база не изменялась");
+      return this.m.apiImport(name, text, { dryRun: false }).then((res) => {
+        this.flash("Загружено в базу: " + res.accepted + " карточек" + (res.places ? ", мест: " + res.places : ""));
+        return this.reload();
+      });
+    }).catch((err) => this.flash(
+      /HTTP 403/.test(err.message) ? "Импорт доступен только модератору — войдите" :
+      /HTTP 413/.test(err.message) ? "Файл больше 20 МБ" :
+      "Импорт не выполнен: " + err.message));
   }
 
   openPrint() { this.setState({ printOpen: true }); setTimeout(() => this.renderPreview(), 90); }
