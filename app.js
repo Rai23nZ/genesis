@@ -3,7 +3,25 @@
 const h = React.createElement;
 
 const GEN = ["#56633f", "#8c491a", "#645c50", "#728157", "#b2622d"];
-const ROMAN = ["I", "II", "III", "IV", "V", "VI"];
+const ROMAN = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"];
+
+// Достоверность сведений — цветом на карточке и подписью в карточке-развороте.
+const STATUS_COLOR = { confirmed: "#4a6b45", unknown: "#8a7f6d", hypothesis: "#c67139" };
+const STATUS_LABEL = { confirmed: "Подтверждено документом", unknown: "Со слов родных", hypothesis: "Гипотеза" };
+
+// Фон: силуэт дерева. Он должен читаться и не спорить с содержанием, поэтому
+// живёт одной полупрозрачной картинкой под полотном, а не набором элементов.
+const BACKDROP = (w, hgt) => {
+  const cx = w / 2, base = hgt;
+  const branch = (dx, dy, sw) =>
+    `<path d="M ${cx} ${base - hgt * (dy - 0.06)} Q ${cx + dx * w * 0.08} ${base - hgt * dy} ${cx + dx * w * 0.17} ${base - hgt * (dy + 0.12)}" stroke-width="${sw}"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${w} ${hgt}" preserveAspectRatio="xMidYMax meet">
+    <g fill="none" stroke="#201e1d" stroke-linecap="round" opacity="0.055" stroke-width="14">
+      <path d="M ${cx} ${base} L ${cx} ${base - hgt * 0.62}"/>
+      ${branch(-1, 0.3, 9)}${branch(1, 0.34, 8)}${branch(-1, 0.5, 7)}${branch(1, 0.54, 6)}
+    </g></svg>`;
+  return "url(\"data:image/svg+xml," + encodeURIComponent(svg) + "\")";
+};
 const CFG = window.FT_CONFIG || {};
 // Учётных данных в клиенте нет и быть не должно: роль подтверждает только сервер.
 const HAS_API = !!String(CFG.apiBase || "").trim();
@@ -13,7 +31,7 @@ class App extends React.Component {
     super(props);
     this.state = {
       people: null, pending: [], sel: null, q: "", role: "Гость", zoom: 0.82, modOpen: false, mapOpen: false,
-      editing: false, draft: {}, toast: null, title: CFG.fallbackTitle || "Семейное древо", verified: {},
+      editing: false, draft: {}, form: null, toast: null, title: CFG.fallbackTitle || "Семейное древо", verified: {},
       demo: !HAS_API, authOpen: false, authRole: null, authLogin: "", authSecret: "", authErr: "", authBusy: false,
       scanOpen: false, scanRows: [], printOpen: false, printScale: 0.72, printLand: true,
       mapMode: "all", mapRoute: ""
@@ -39,7 +57,10 @@ class App extends React.Component {
           pending: d.moderation.slice(),
           title: d.title || this.state.title,
           sel: d.people[0] ? d.people[0].id : null,
-          demo: d.source !== "api"
+          demo: d.source !== "api",
+          // Роль восстанавливается из сессии: cookie переживает перезагрузку,
+          // и вводить пароль заново незачем.
+          ...this.roleFromServer(d)
         });
         if (d.source !== "api") this.flash("Демонстрационный режим: сервер не подключён, изменения не сохраняются");
       });
@@ -83,45 +104,118 @@ class App extends React.Component {
     });
   }
 
+  // Роль, подтверждённая сервером. Возвращается пустой объект, если сервера нет:
+  // в демонстрационном режиме роль остаётся той, что выбрана в интерфейсе.
+  roleFromServer(d) {
+    if (!d || d.source !== "api" || !d.role) return {};
+    return { role: d.role, verified: { ...this.state.verified, [d.role]: true } };
+  }
+
   // Перечитать архив с сервера — после входа, правки или решения модератора.
   reload() {
     if (!this.m) return Promise.resolve();
     return this.m.loadArchive().then((d) => {
       this.setState({
         people: d.people.slice(), pending: d.moderation.slice(),
-        title: d.title || this.state.title, demo: d.source !== "api"
+        title: d.title || this.state.title, demo: d.source !== "api",
+        ...this.roleFromServer(d)
       });
     }).catch((err) => this.flash("Не удалось обновить данные: " + err.message));
   }
 
-  submitEdit() {
-    const s = this.state, p = (s.people || []).find(x => x.id === s.sel);
-    if (!p) return;
-    const changes = [], fields = {};
-    const photos = s.draft.photos || [];
-    if (s.draft.occupation !== (p.occupation || "")) { changes.push({ field: "Профессия", before: p.occupation || "—", after: s.draft.occupation || "—" }); fields.occupation = s.draft.occupation; }
-    if (s.draft.notes !== (p.notes || "")) { changes.push({ field: "Заметки", before: p.notes || "—", after: s.draft.notes || "—" }); fields.notes = s.draft.notes; }
-    if (photos.length) {
-      changes.push({ field: "Галерея", before: (p.photos || []).length + " фото", after: ((p.photos || []).length + photos.length) + " фото" });
-      photos.forEach(ph => changes.push({ field: "Новое фото", before: "—", after: ph.caption || "без подписи" }));
+  // ——— Карточка: правка и добавление одной формой. Модератору сервер применяет
+  // изменения сразу, родственнику ставит в очередь — решает роль сессии, не клиент.
+  openForm(person) {
+    const blank = {
+      surname: "", name: "", patronymic: "", maidenName: "", sex: "m", status: "unknown",
+      birthDate: "", birthPlace: "", deathDate: "", deathPlace: "", bio: "", sources: "",
+      fatherId: "", motherId: "", spouseIds: []
+    };
+    const fields = person
+      ? Object.keys(blank).reduce((a, k) => (a[k] = Array.isArray(blank[k]) ? (person[k] || []).slice() : (person[k] ?? blank[k]), a), {})
+      : blank;
+    this.setState({ form: { id: person ? person.id : null, fields, photos: [] }, editing: true });
+  }
+
+  setField(k, v) {
+    const f = this.state.form;
+    this.setState({ form: { ...f, fields: { ...f.fields, [k]: v } } });
+  }
+
+  submitForm() {
+    const s = this.state, f = s.form;
+    if (!f) return;
+    const isNew = !f.id;
+    const named = [f.fields.surname, f.fields.name, f.fields.patronymic].some(v => String(v || "").trim());
+    if (!named) return this.flash("Укажите хотя бы фамилию или имя");
+    if (!HAS_API) return this.flash("Без сервера правка не сохранится — работает только просмотр");
+
+    if (isNew) {
+      return this.m.apiCreatePerson({ fields: f.fields })
+        .then((res) => {
+          this.setState({ form: null, editing: false, sel: res.id || s.sel });
+          this.flash(res.queued ? "Отправлено модератору: новый человек" : "Человек добавлен");
+          return this.reload();
+        })
+        .catch((err) => this.flash("Не удалось добавить: " + err.message));
     }
-    if (!changes.length) { this.setState({ editing: false }); return this.flash("Изменений нет"); }
-    const rec = { id: "u" + Date.now(), author: "Вы", role: s.role.toLowerCase(), date: new Date().toISOString(), target: p.id, targetName: p.name, kind: photos.length && changes.length <= photos.length + 1 ? "photo" : "edit", summary: "Правка из карточки", changes, patch: { fields, photos } };
-    if (HAS_API) {
-      // Решение о том, публиковать сразу или отправить в очередь, принимает сервер
-      // по роли сессии — клиент только передаёт правку.
-      this.setState({ editing: false, draft: {} });
-      return this.m.apiSubmitEdit(p.id, { fields, changes, photos: photos.map(x => ({ caption: x.caption })) })
-        .then((res) => { this.flash(res.queued ? "Отправлено модератору" : "Сохранено"); return this.reload(); })
-        .catch((err) => this.flash("Не удалось отправить правку: " + err.message));
-    }
-    if (s.role === "Модератор") {
-      const people = s.people.map(x => x.id === p.id ? { ...x, ...fields, photos: [...(x.photos || []), ...photos] } : x);
-      this.setState({ people, editing: false, draft: {} });
-      return this.flash("Сохранено без очереди — вы модератор");
-    }
-    this.setState({ pending: [rec, ...s.pending], editing: false, draft: {} });
-    this.flash("Отправлено модератору. На лендинге появится после подтверждения");
+
+    const before = (s.people || []).find(x => x.id === f.id) || {};
+    const LABEL = {
+      surname: "Фамилия", name: "Имя", patronymic: "Отчество", maidenName: "Девичья фамилия",
+      sex: "Пол", status: "Достоверность", birthDate: "Дата рождения", birthPlace: "Место рождения",
+      deathDate: "Дата смерти", deathPlace: "Место смерти", bio: "Биография", sources: "Источники",
+      fatherId: "Отец", motherId: "Мать", spouseIds: "Супруги"
+    };
+    const idx = this.m.byId(s.people || []);
+    const show = (k, v) => {
+      if (k === "fatherId" || k === "motherId") return v && idx[v] ? this.m.fio(idx[v]) : "—";
+      if (k === "spouseIds") return (v || []).map(id => idx[id] && this.m.fio(idx[id])).filter(Boolean).join(", ") || "—";
+      if (k === "status") return STATUS_LABEL[v] || v;
+      if (k === "sex") return v === "f" ? "женский" : "мужской";
+      return String(v || "—");
+    };
+    const fields = {}, changes = [];
+    Object.keys(f.fields).forEach(k => {
+      const now = f.fields[k], was = before[k];
+      const same = Array.isArray(now) ? JSON.stringify(now.slice().sort()) === JSON.stringify((was || []).slice().sort()) : String(now || "") === String(was || "");
+      if (same) return;
+      fields[k] = now;
+      changes.push({ field: LABEL[k] || k, before: show(k, was), after: show(k, now) });
+    });
+    const photos = f.photos || [];
+    if (!changes.length && !photos.length) { this.setState({ form: null, editing: false }); return this.flash("Изменений нет"); }
+
+    this.setState({ form: null, editing: false });
+    // Снимки уходят отдельным маршрутом: файл — не утверждение о человеке,
+    // он сохраняется сразу, а поля карточки идут обычным путём через роль.
+    const sendPhotos = photos.length
+      ? this.m.apiUploadPhotos(f.id, photos.map(x => ({ full: x.full, thumb: x.src, caption: x.caption })))
+          .then((r) => this.flash("Снимков сохранено: " + r.added))
+          .catch((err) => this.flash("Снимки не сохранились: " + err.message))
+      : Promise.resolve();
+
+    const sendFields = changes.length
+      ? this.m.apiSubmitEdit(f.id, { fields, changes })
+          .then((res) => this.flash(res.queued ? "Отправлено модератору" : "Сохранено"))
+          .catch((err) => this.flash("Не удалось отправить правку: " + err.message))
+      : Promise.resolve();
+
+    return sendPhotos.then(() => sendFields).then(() => this.reload());
+  }
+
+  // Удаление правит древо у всех, кто ссылался на карточку, поэтому спрашиваем
+  // подтверждение и называем, что именно исчезнет.
+  deletePerson(p) {
+    const s = this.state;
+    const kids = (s.people || []).filter(x => x.fatherId === p.id || x.motherId === p.id).length;
+    const text = "Удалить карточку: " + this.m.fio(p) + "?\n\n" +
+      (kids ? "У " + kids + " человек в древе пропадёт связь с этим родителем.\n" : "") +
+      "Действие необратимо.";
+    if (!window.confirm(text)) return;
+    this.m.apiDeletePerson(p.id)
+      .then(() => { this.setState({ sel: null, editing: false, form: null }); this.flash("Карточка удалена"); return this.reload(); })
+      .catch((err) => this.flash(/HTTP 403/.test(err.message) ? "Удалять может только модератор" : "Не удалось удалить: " + err.message));
   }
 
   approve(x) {
@@ -151,8 +245,18 @@ class App extends React.Component {
     const files = [...(e.target.files || [])].filter(f => /^image\//.test(f.type)).slice(0, 12);
     e.target.value = "";
     if (!files.length) return;
-    const add = files.map(f => ({ src: URL.createObjectURL(f), caption: f.name.replace(/\.[a-z0-9]+$/i, "") }));
-    this.setState({ draft: { ...this.state.draft, photos: [...(this.state.draft.photos || []), ...add] } });
+    if (!this.state.form) return;
+    this.flash("Готовлю снимки…");
+    // Пересохранение в браузере уменьшает файл и снимает EXIF ещё до отправки.
+    Promise.all(files.map(async (file) => ({
+      src: await this.m.compressImage(file, 320, 0.7),
+      full: await this.m.compressImage(file, 1600, 0.82),
+      caption: file.name.replace(/\.[a-z0-9]+$/i, "")
+    }))).then((add) => {
+      const form = this.state.form;
+      if (form) this.setState({ form: { ...form, photos: [...(form.photos || []), ...add] } });
+      this.flash("Снимков добавлено: " + add.length + ". Сохраните карточку.");
+    }).catch((err) => this.flash("Не удалось прочитать снимок: " + err.message));
   }
 
   onScanPick(e) {
@@ -160,12 +264,12 @@ class App extends React.Component {
     e.target.value = "";
     if (!files.length) return this.flash("Изображений в папке не найдено");
     const people = this.state.people || [];
-    const norm = (t) => t.toLowerCase().replace(/ё/g, "е").replace(/[^а-яa-z]+/g, " ");
+    const norm = (t) => String(t || "").toLowerCase().replace(/ё/g, "е").replace(/[^а-яa-z]+/g, " ");
     const rows = files.map((f) => {
       const path = norm(f.webkitRelativePath || f.name);
       let best = null;
       people.forEach(p => {
-        const words = norm(p.name).split(" ").filter(w => w.length > 3);
+        const words = norm(this.m.fio(p)).split(" ").filter(w => w.length > 3);
         const score = words.filter(w => path.includes(w)).length;
         if (score >= 2 && (!best || score > best.score)) best = { id: p.id, score };
       });
@@ -187,7 +291,7 @@ class App extends React.Component {
     }
     const recs = Object.keys(byPerson).map((pid, i) => ({
       id: "u" + Date.now() + i, author: "Вы", role: s.role.toLowerCase(), date: new Date().toISOString(),
-      target: pid, targetName: idx[pid] ? idx[pid].name : pid, kind: "photo",
+      target: pid, targetName: idx[pid] ? this.m.fio(idx[pid]) : pid, kind: "photo",
       summary: "Сканы из папки: " + byPerson[pid].length + " файлов",
       changes: [{ field: "Галерея", before: ((idx[pid]?.photos || []).length) + " фото", after: ((idx[pid]?.photos || []).length + byPerson[pid].length) + " фото" },
         ...byPerson[pid].map(ph => ({ field: "Файл", before: "—", after: ph.caption }))],
@@ -224,6 +328,14 @@ class App extends React.Component {
   importToServer(name, text) {
     this.flash("Разбор файла на сервере…");
     return this.m.apiImport(name, text, { dryRun: true }).then((rep) => {
+      // Файл со справочником мест людей не содержит — это не ошибка.
+      if (!rep.accepted && rep.places) {
+        if (!window.confirm("Файл: " + name + "\nКарточек нет, мест на карте: " + rep.places + ".\n\nЗагрузить координаты?")) {
+          return this.flash("Импорт отменён");
+        }
+        return this.m.apiImport(name, text, { dryRun: false })
+          .then((res) => { this.flash("Загружено мест: " + res.places); return this.reload(); });
+      }
       if (!rep.accepted) {
         return this.flash("Записей о людях не найдено" + (rep.rejected.length ? ". Отклонено: " + rep.rejected.length : ""));
       }
@@ -357,10 +469,16 @@ class App extends React.Component {
         s.demo ? h("span", { title: "Сервер не подключён: данные читаются из data/sample.json, изменения никуда не сохраняются",
           style: { fontFamily: "var(--font-body)", fontSize: "10.5px", letterSpacing: ".08em", textTransform: "uppercase", color: "var(--color-accent)", border: "1px solid var(--color-accent)", padding: "2px 7px", flex: "none" } }, "демо") : null),
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "0 18px", flex: "none" } },
-        h("button", { onClick: () => this.setState({ modOpen: true }), className: "btn btn-primary", style: { position: "relative" } },
-          "Модерация", s.pending.length ? h("span", { style: { marginLeft: "8px", background: "var(--color-accent)", color: "#fff", fontFamily: "var(--font-body)", fontSize: "10.5px", padding: "1px 6px" } }, s.pending.length) : null),
-        h("label", { className: "btn btn-secondary", title: "Импорт .json / .ged — название архива берётся из поля title (JSON) или строки 1 FILE в блоке HEAD (GEDCOM)" },
-          "Импорт", h("input", { type: "file", accept: ".json,.ged,.gedcom", onChange: (e) => this.onImport(e), style: { display: "none" } })),
+        // Добавление доступно и модератору, и родственнику: у первого карточка
+        // появляется сразу, у второго уходит в очередь — решает сервер.
+        s.role !== "Гость" ? h("button", { onClick: () => this.openForm(null), className: "btn btn-primary" }, "+ Человек") : null,
+        s.role === "Модератор" ? h("button", { onClick: () => this.setState({ modOpen: true }), className: "btn btn-primary", style: { position: "relative" } },
+          "Модерация", s.pending.length ? h("span", { style: { marginLeft: "8px", background: "var(--color-accent)", color: "#fff", fontFamily: "var(--font-body)", fontSize: "10.5px", padding: "1px 6px" } }, s.pending.length) : null) : null,
+        // Импорт заменяет карточки целиком, поэтому доступен только модератору:
+        // сервер в этом маршруте отказывает всем остальным, и кнопка не должна
+        // обещать того, чего не будет.
+        s.role === "Модератор" ? h("label", { className: "btn btn-secondary", title: "Импорт .json / .ged — название архива берётся из поля title (JSON) или строки 1 FILE в блоке HEAD (GEDCOM)" },
+          "Импорт", h("input", { type: "file", accept: ".json,.ged,.gedcom", onChange: (e) => this.onImport(e), style: { display: "none" } })) : null,
         h("label", { className: "btn btn-secondary", title: "Папка со сканами: после выбора откроется привязка файлов к людям" },
           "Сканы", h("input", { type: "file", accept: "image/*", multiple: true, webkitdirectory: "", onChange: (e) => this.onScanPick(e), style: { display: "none" } })),
         h("button", { onClick: () => this.m && this.m.download("family-archive-" + new Date().toISOString().slice(0, 10) + ".json", this.m.exportBackup(s.people || [], s.pending, { title: s.title })) || this.flash("Бэкап выгружен: люди, правки, название архива"), className: "btn btn-secondary", title: "Экспорт бэкапа в .json" }, "Экспорт"),
@@ -373,28 +491,32 @@ class App extends React.Component {
     if (!m || !s.people) return h("div", { style: { padding: "60px", color: "#201e1d8c" } }, "Загрузка…");
     const L = m.layout(s.people, { w: 200, h: 122, gx: 26, gy: 92 });
     const q = s.q.trim().toLowerCase();
-    const hit = (p) => !q || [p.name, p.maiden, p.occupation, p.employer, ...(p.residences || []).map(r => r.place)].filter(Boolean).join(" ").toLowerCase().includes(q);
+    const hit = (p) => !q || [p.surname, p.name, p.patronymic, p.maidenName, p.bio, p.birthPlace, p.deathPlace]
+      .concat((p.residences || []).map(r => r.place)).filter(Boolean).join(" ").toLowerCase().includes(q);
     const depths = [...new Set(L.nodes.map(n => n.depth))].sort((a, b) => a - b);
     const bands = depths.map(d => h("div", { key: "band" + d, style: { position: "absolute", left: 0, top: (d * (122 + 92) - 30) + "px", width: L.width + "px", borderTop: "1px dashed #201e1d26", paddingTop: "7px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "#201e1d73", pointerEvents: "none" } }, "Поколение " + (ROMAN[d] || d + 1) + " · " + L.nodes.filter(n => n.depth === d).length + " человек"));
     const edges = L.edges.map((e, i) => h("div", { key: "e" + i, style: e.type === "h" ? { position: "absolute", left: e.x + "px", top: e.y + "px", width: Math.max(1, e.len) + "px", height: "1px", background: "#201e1d66" } : { position: "absolute", left: e.x + "px", top: e.y + "px", width: "1px", height: Math.max(1, e.len) + "px", background: "#201e1d66" } }));
     const nodes = L.nodes.map((n) => {
       const p = n.p, vis = this.visible(p), on = hit(p), isSel = p.id === s.sel;
-      const nm = (p.name || "").split(" ");
       const ph = vis && (p.photos || []).find(x => x.src);
       const accent = "var(--color-accent-2)";
+      // Полоса слева — достоверность сведений: в родословной это такая же часть
+      // карточки, как имя, иначе гипотеза выглядит как установленный факт.
+      const edge = isSel ? accent : (STATUS_COLOR[p.status] || STATUS_COLOR.unknown);
       return h("div", { key: p.id, style: { position: "absolute", left: n.x + "px", top: n.y + "px", width: n.w + "px", height: n.h + "px", opacity: on ? 1 : 0.22, transition: "opacity .2s" } },
-        h("div", { onClick: () => this.setState({ sel: p.id, editing: false }),
-          style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(#f9f4ed,#eee7db)", border: "1px solid " + (isSel ? accent : "#201e1d4d"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + (isSel ? accent : GEN[n.depth % 5]), cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px #7a8a5e38, 0 0 0 1px " + accent : "0 2px 6px #201e1d14, 2px 2px 0 #201e1d0d" } },
+        h("div", { onClick: () => this.setState({ sel: p.id, editing: false }), title: vis ? m.fio(p) : "Живущий человек — карточка скрыта",
+          style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(#f9f4ed,#eee7db)", border: "1px solid " + (isSel ? accent : "#201e1d4d"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + edge, cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px #7a8a5e38, 0 0 0 1px " + accent : "0 2px 6px #201e1d14, 2px 2px 0 #201e1d0d" } },
           h("div", { style: { width: "58px", flex: "none", margin: "10px 11px 10px 10px", background: ph ? "#000" : (vis ? "linear-gradient(135deg,#eee7db,#dcd3c4)" : "#201e1d0d"), backgroundImage: ph ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "var(--radius-sm)", border: "1px solid #201e1d33", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "13px", color: "#201e1d73" } }, vis ? (ph ? "" : m.initials(p)) : "•"),
           h("div", { style: { flex: 1, minWidth: 0, padding: "11px 12px 10px 0", display: "flex", flexDirection: "column", justifyContent: "center" } },
-            h("div", { style: { flex: "none", fontSize: "14.5px", fontWeight: 600, lineHeight: 1.15 } }, vis ? nm.slice(0, 1).join(" ") : "Скрыто"),
-            h("div", { style: { flex: "none", fontSize: "13px", lineHeight: 1.2, marginTop: "1px" } }, vis ? nm.slice(1).join(" ") : ""),
+            h("div", { style: { flex: "none", fontSize: "14.5px", fontWeight: 600, lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? (p.surname || "—") : "Скрыто"),
+            h("div", { style: { flex: "none", fontSize: "13px", lineHeight: 1.2, marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? [p.name, p.patronymic].filter(Boolean).join(" ") : ""),
             h("div", { style: { flex: "none", fontFamily: "var(--font-body)", fontSize: "10.5px", color: "#201e1da6", marginTop: "6px" } }, vis ? m.years(p) : "живущий человек"),
-            h("div", { style: { flex: "none", fontSize: "11.5px", color: "#201e1d99", marginTop: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? (p.occupation || "") : "")),
+            h("div", { style: { flex: "none", fontSize: "11.5px", color: "#201e1d99", marginTop: "3px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? (p.bio || p.birthPlace || "") : "")),
           h("div", { style: { position: "absolute", right: "8px", top: "8px", width: "7px", height: "7px", borderRadius: "50%", background: p.living ? "var(--color-accent-2)" : "transparent" } })));
     });
     return h("div", { style: { flex: 1, position: "relative", overflow: "hidden" } },
       h("div", { style: { position: "absolute", inset: 0, overflow: "auto", background: "radial-gradient(120% 90% at 30% 0%,#f9f4ed,var(--color-surface) 70%,#dcd3c4)" } },
+        h("div", { style: { position: "absolute", inset: 0, backgroundImage: BACKDROP(1200, 900), backgroundRepeat: "no-repeat", backgroundPosition: "center bottom", backgroundSize: "min(90%, 1100px) auto", pointerEvents: "none" } }),
         h("div", { "data-canvas": "", style: { position: "relative", transform: "scale(" + s.zoom + ")", transformOrigin: "0 0", padding: "60px 80px", width: "max-content" } }, bands, edges, nodes)),
       h("div", { style: { position: "absolute", left: "18px", bottom: "18px", display: "flex", border: "1px solid #201e1d26", background: "var(--color-bg)" } },
         h("button", { onClick: () => this.setState({ zoom: Math.max(0.35, s.zoom - 0.12) }), style: { width: "32px", height: "30px", border: "none", borderRight: "1px solid #201e1d1a", background: "transparent", fontSize: "16px", cursor: "pointer", color: "var(--color-text)" } }, "−"),
@@ -404,6 +526,7 @@ class App extends React.Component {
         h("div", null, s.people.length + " человек · " + L.nodes.reduce((a, n) => Math.max(a, n.depth), 0) + " поколения · " + s.people.reduce((a, p) => a + (p.photos || []).length, 0) + " фото"),
         h("div", null, "роль: " + s.role.toLowerCase() + (s.role === "Гость" ? " · живущие скрыты" : ""))),
       s.sel ? this.renderSidebar() : null,
+      s.form ? this.renderPersonForm() : null,
       s.modOpen ? this.renderModPanel() : null,
       s.mapOpen ? this.renderMapPanel() : null,
       s.authOpen ? this.renderAuthDialog() : null,
@@ -418,73 +541,157 @@ class App extends React.Component {
     if (!p) return null;
     const vis = this.visible(p);
     const idx = m.byId(s.people);
+    const isMod = s.role === "Модератор";
     const relatives = [
-      ...(p.parents || []).map(id => ({ id, r: "родитель" })),
-      ...(p.spouse || []).map(id => ({ id, r: "супруг" })),
-      ...s.people.filter(x => (x.parents || []).includes(p.id)).map(x => ({ id: x.id, r: "ребёнок" }))
-    ].filter(r => idx[r.id]);
-    const facts = [["Родился", [p.birth?.date, p.birth?.place].filter(Boolean).join(", ")],
-      ["Умер", p.living ? "" : [p.death?.date, p.death?.place].filter(Boolean).join(", ")],
-      ["Профессия", p.occupation], ["Место работы", p.employer], ["Образование", p.education], ["Служба", p.military]].filter(x => x[1]);
-    const docs = [...(p.documents || []).map(d => ({ tag: "док", text: d })), ...(p.sources || []).map(d => ({ tag: "ист", text: d }))];
+      p.fatherId ? { id: p.fatherId, r: "отец" } : null,
+      p.motherId ? { id: p.motherId, r: "мать" } : null,
+      ...(p.spouseIds || []).map(id => ({ id, r: "супруг" })),
+      ...s.people.filter(x => x.fatherId === p.id || x.motherId === p.id).map(x => ({ id: x.id, r: "ребёнок" }))
+    ].filter(r => r && idx[r.id]);
+    const facts = [
+      ["Родился", [p.birthDate, p.birthPlace].filter(Boolean).join(", ")],
+      ["Умер", [p.deathDate, p.deathPlace].filter(Boolean).join(", ")],
+      ["Достоверность", STATUS_LABEL[p.status] || STATUS_LABEL.unknown]
+    ].filter(x => x[1]);
+
     return h("aside", { className: "card elev-lg", style: { position: "absolute", right: 0, top: 0, bottom: 0, width: "452px", zIndex: 9, borderRadius: "var(--radius-lg) 0 0 var(--radius-lg)", padding: 0, background: "#f9f4ed", overflow: "auto", boxShadow: "-14px 0 34px #201e1d14" } },
       h("div", { style: { padding: "22px 26px 18px", borderBottom: "1px solid var(--color-divider)", position: "sticky", top: 0, background: "#f9f4ed", zIndex: 2 } },
         h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "16px" } },
-          h("div", null, this.kicker("Карточка · " + p.id),
-            h("h2", { style: { fontSize: "25px", fontWeight: 600, lineHeight: 1.15, margin: "6px 0 0" } }, p.name),
-            h("div", { style: { fontFamily: "var(--font-body)", fontSize: "12px", color: "#201e1da6", marginTop: "6px" } }, m.years(p) + (p.maiden ? " · урожд. " + p.maiden : ""))),
+          h("div", { style: { minWidth: 0 } }, this.kicker("Карточка"),
+            h("h2", { style: { fontSize: "25px", fontWeight: 600, lineHeight: 1.15, margin: "6px 0 0" } }, vis ? m.fio(p) : "Скрыто"),
+            h("div", { style: { fontFamily: "var(--font-body)", fontSize: "12px", color: "#201e1da6", marginTop: "6px" } },
+              m.years(p) + (p.maidenName ? " · урожд. " + p.maidenName : "")),
+            h("div", { style: { display: "inline-block", marginTop: "8px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".12em", textTransform: "uppercase", color: "#fff", background: STATUS_COLOR[p.status] || STATUS_COLOR.unknown, padding: "3px 8px" } },
+              STATUS_LABEL[p.status] || STATUS_LABEL.unknown)),
           h("button", { onClick: () => this.setState({ sel: null, editing: false }), className: "btn btn-icon btn-ghost" }, "×")),
-        h("div", { style: { display: "flex", gap: "8px", marginTop: "16px" } },
-          h("button", { onClick: () => { this.setState({ editing: true, draft: { occupation: p.occupation || "", notes: p.notes || "", photos: [] } }); }, className: "btn btn-primary" }, "Предложить правку"),
-          h("button", { onClick: () => this.setState({ mapOpen: true, mapMode: "route", mapRoute: p.id }), className: "btn btn-secondary" }, "Показать на карте"))),
-      s.editing ? this.renderEditForm(p) : null,
+        s.role !== "Гость" ? h("div", { style: { display: "flex", gap: "8px", marginTop: "16px", flexWrap: "wrap" } },
+          h("button", { onClick: () => this.openForm(p), className: "btn btn-primary" }, isMod ? "Редактировать" : "Предложить правку"),
+          h("button", { onClick: () => this.setState({ mapOpen: true, mapMode: "route", mapRoute: p.id }), className: "btn btn-secondary" }, "На карте"),
+          isMod ? h("button", { onClick: () => this.deletePerson(p), className: "btn btn-secondary", style: { color: "var(--color-accent)", borderColor: "var(--color-accent)" } }, "Удалить") : null
+        ) : h("div", { style: { fontFamily: "var(--font-body)", fontSize: "11px", color: "#201e1d8c", marginTop: "14px" } }, "Правки доступны после входа")),
+
       !vis ? h("div", { style: { margin: "26px", border: "1px dashed #201e1d40", padding: "22px", textAlign: "center", color: "#201e1d99", fontSize: "13.5px", lineHeight: 1.6 } }, "Данные живущего человека скрыты от гостей.", h("br"), "Войдите как родственник, чтобы увидеть карточку.") : null,
+
       vis ? h("div", { style: { padding: "0 26px 40px" } },
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "8px", margin: "20px 0 8px" } },
-          (p.photos || []).map((ph, i) => h("div", { key: i, style: { aspectRatio: "3/4", background: "linear-gradient(135deg,#eee7db,#dcd3c4)", border: "1px solid #201e1d2e", boxShadow: "0 2px 6px #201e1d14", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "7px", position: "relative" } },
-            h("div", { style: { position: "absolute", inset: 0, display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "9px", letterSpacing: ".14em", color: "#201e1d59" } }, "ФОТО"),
-            h("div", { style: { position: "relative", fontSize: "10.5px", lineHeight: 1.3, color: "var(--color-text)", background: "#f9f4ed", padding: "3px 5px" } }, ph.caption)))),
-        h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10px", color: "#201e1d8c", marginBottom: "22px" } }, (p.photos || []).length ? (p.photos || []).length + " фотографии в карточке" : "фотографий пока нет"),
+        (p.photos || []).length ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "8px", margin: "20px 0 8px" } },
+          (p.photos || []).map((ph, i) => h("div", { key: i, style: { aspectRatio: "3/4", background: ph.src ? "#000" : "linear-gradient(135deg,#eee7db,#dcd3c4)", backgroundImage: ph.src ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", border: "1px solid #201e1d2e", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "7px", position: "relative" } },
+            ph.src ? null : h("div", { style: { position: "absolute", inset: 0, display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "9px", letterSpacing: ".14em", color: "#201e1d59" } }, "ФОТО"),
+            ph.caption ? h("div", { style: { position: "relative", fontSize: "10.5px", lineHeight: 1.3, color: "var(--color-text)", background: "#f9f4ed", padding: "3px 5px" } }, ph.caption) : null))) : null,
+
         facts.map(([k, v], i) => h("div", { key: i, style: { display: "grid", gridTemplateColumns: "126px 1fr", gap: "14px", padding: "9px 0", borderTop: "1px solid #201e1d14", alignItems: "baseline" } },
           h("div", { style: { fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".11em", textTransform: "uppercase", color: "#201e1d8c" } }, k),
           h("div", { style: { fontSize: "14.5px", lineHeight: 1.5 } }, v))),
-        h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
-          this.kicker("Места проживания"),
+
+        (p.residences || []).length ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
+          this.kicker("Места"),
           (p.residences || []).map((r, i) => h("div", { key: i, style: { display: "grid", gridTemplateColumns: "96px 1fr", gap: "12px", padding: "6px 0", fontSize: "14px", alignItems: "baseline", marginTop: "10px" } },
-            h("div", { style: { fontFamily: "var(--font-body)", fontSize: "11.5px", color: "#201e1da6" } }, r.from + (r.to ? "–" + r.to : "→")),
-            h("div", null, r.place, r.note ? h("span", { style: { color: "#201e1d8c", fontSize: "12.5px" } }, " · " + r.note) : null)))),
-        docs.length ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
-          this.kicker("Документы и источники"),
-          docs.map((d, i) => h("div", { key: i, style: { display: "flex", gap: "10px", padding: "6px 0", fontSize: "13.5px", lineHeight: 1.45, alignItems: "baseline", marginTop: "8px" } },
-            h("span", { style: { fontFamily: "var(--font-body)", fontSize: "9.5px", color: "var(--color-accent)", letterSpacing: ".1em", flex: "none", width: "44px" } }, d.tag), h("span", null, d.text)))) : null,
-        p.notes ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
-          this.kicker("Заметки"), h("p", { style: { fontSize: "15px", lineHeight: 1.62, margin: "8px 0 0", fontStyle: "italic", color: "#201e1de0" } }, p.notes)) : null,
-        h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
+            h("div", { style: { fontFamily: "var(--font-body)", fontSize: "11.5px", color: "#201e1da6" } }, [r.from, r.to].filter(Boolean).join("–") || "—"),
+            h("div", null, r.place, r.note ? h("span", { style: { color: "#201e1d8c", fontSize: "12.5px" } }, " · " + r.note) : null)))) : null,
+
+        p.bio ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
+          this.kicker("Биография"), h("p", { style: { fontSize: "15px", lineHeight: 1.62, margin: "8px 0 0", whiteSpace: "pre-wrap" } }, p.bio)) : null,
+
+        p.sources ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
+          this.kicker("Источники"), h("p", { style: { fontSize: "13px", lineHeight: 1.55, margin: "8px 0 0", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "#3e4a48" } }, p.sources)) : null,
+
+        relatives.length ? h("div", { style: { marginTop: "26px", borderTop: "1px solid var(--color-text)", paddingTop: "14px" } },
           this.kicker("Связи"),
           h("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "10px" } },
-            relatives.map((rel, i) => h("button", { key: i, onClick: () => this.setState({ sel: rel.id, editing: false }), style: { border: "1px solid #201e1d26", background: "transparent", font: "inherit", fontSize: "12.5px", padding: "5px 10px", cursor: "pointer", color: "var(--color-text)" } }, m.shortName(idx[rel.id]) + " · " + rel.r)))))
+            relatives.map((rel, i) => h("button", { key: rel.id + rel.r + i, onClick: () => this.setState({ sel: rel.id, editing: false }), style: { border: "1px solid #201e1d26", background: "transparent", font: "inherit", fontSize: "12.5px", padding: "5px 10px", cursor: "pointer", color: "var(--color-text)" } }, m.shortName(idx[rel.id]) + " · " + rel.r)))) : null)
         : null);
   }
 
-  renderEditForm(p) {
-    const s = this.state, photos = s.draft.photos || [];
-    return h("div", { style: { margin: "20px 26px", border: "1px solid var(--color-accent)", background: "#c671390a", padding: "16px 18px" } },
-      h("div", { style: { fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "var(--color-accent)", marginBottom: "12px" } }, "Правка уйдёт на модерацию"),
-      h("label", { style: { display: "block", fontSize: "11.5px", color: "#201e1d99", marginBottom: "4px" } }, "Профессия"),
-      h("input", { value: s.draft.occupation || "", onChange: (e) => this.setState({ draft: { ...s.draft, occupation: e.target.value } }), style: { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "7px 9px", marginBottom: "12px", color: "var(--color-text)" } }),
-      h("label", { style: { display: "block", fontSize: "11.5px", color: "#201e1d99", marginBottom: "4px" } }, "Заметки и истории"),
-      h("textarea", { value: s.draft.notes || "", onChange: (e) => this.setState({ draft: { ...s.draft, notes: e.target.value } }), rows: 4, style: { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "7px 9px", resize: "vertical", color: "var(--color-text)" } }),
-      h("label", { style: { display: "block", fontSize: "11.5px", color: "#201e1d99", margin: "12px 0 5px" } }, "Фотографии — по одной, с подписью"),
-      h("div", { style: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "7px" } },
-        photos.map((ph, i) => h("div", { key: i, style: { position: "relative", aspectRatio: "3/4", background: "#000", backgroundImage: "url(" + ph.src + ")", backgroundSize: "cover", backgroundPosition: "center", border: "1px solid #201e1d33" } },
-          h("button", { onClick: () => this.setState({ draft: { ...s.draft, photos: photos.filter((_, j) => j !== i) } }), title: "Убрать", style: { position: "absolute", right: "3px", top: "3px", width: "18px", height: "18px", border: "none", background: "#201e1dcc", color: "#fff", fontSize: "11px", cursor: "pointer" } }, "×"),
-          h("input", { value: ph.caption, onChange: (e) => { const arr = photos.slice(); arr[i] = { ...arr[i], caption: e.target.value }; this.setState({ draft: { ...s.draft, photos: arr } }); }, placeholder: "подпись, год",
-            style: { position: "absolute", left: 0, right: 0, bottom: 0, width: "100%", boxSizing: "border-box", border: "none", borderTop: "1px solid #201e1d26", background: "#f9f4ed", font: "inherit", fontSize: "9.5px", padding: "3px 4px", color: "var(--color-text)", outline: "none" } }))),
-        h("label", { style: { aspectRatio: "3/4", border: "1px dashed #201e1d59", background: "#fff9", display: "grid", placeItems: "center", cursor: "pointer", fontSize: "11px", color: "#201e1d8c", textAlign: "center", padding: "4px" } }, "+ фото", h("input", { type: "file", accept: "image/*", multiple: true, onChange: (e) => this.onDraftPhotos(e), style: { display: "none" } }))),
-      h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10px", color: "#201e1d8c", marginTop: "7px" } }, photos.length ? "будет добавлено фото: " + photos.length : "фото можно добавлять по одной, каждая со своей подписью"),
-      h("div", { style: { display: "flex", gap: "8px", marginTop: "13px" } },
-        h("button", { onClick: () => this.submitEdit(), className: "btn btn-primary" }, "Отправить на проверку"),
-        h("button", { onClick: () => this.setState({ editing: false }), className: "btn btn-secondary" }, "Отмена")));
+  // Полная форма карточки: все поля, связи и фотографии. Для модератора это
+  // прямое редактирование, для родственника — предложение правки.
+  renderPersonForm() {
+    const s = this.state, m = this.m, f = s.form;
+    if (!f) return null;
+    const isNew = !f.id;
+    const isMod = s.role === "Модератор";
+    const v = f.fields;
+    const people = s.people || [];
+
+    // В родители нельзя поставить самого себя и собственного потомка: иначе
+    // счёт поколений зацикливается.
+    const banned = {};
+    if (f.id) {
+      banned[f.id] = true;
+      for (let pass = 0; pass < people.length; pass++) {
+        let grew = false;
+        people.forEach(x => {
+          if (banned[x.id]) return;
+          if (banned[x.fatherId] || banned[x.motherId]) { banned[x.id] = true; grew = true; }
+        });
+        if (!grew) break;
+      }
+    }
+    const options = people.filter(x => !banned[x.id]).sort((a, b) => m.fio(a).localeCompare(m.fio(b), "ru"));
+
+    const label = (t) => h("span", { style: { display: "block", fontFamily: "var(--font-body)", fontSize: "10px", letterSpacing: ".1em", textTransform: "uppercase", color: "#201e1d8c", marginBottom: "4px" } }, t);
+    const inputStyle = { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "8px 9px", color: "var(--color-text)" };
+    const field = (key, title, opts = {}) => h("label", { key, style: { display: "block", marginBottom: "12px", flex: 1, minWidth: 0 } }, label(title),
+      opts.area
+        ? h("textarea", { value: v[key] || "", rows: opts.rows || 3, placeholder: opts.hint || "", onChange: (e) => this.setField(key, e.target.value), style: { ...inputStyle, resize: "vertical", lineHeight: 1.45 } })
+        : h("input", { value: v[key] || "", placeholder: opts.hint || "", onChange: (e) => this.setField(key, e.target.value), style: inputStyle }));
+    const select = (key, title, list) => h("label", { key, style: { display: "block", marginBottom: "12px", flex: 1, minWidth: 0 } }, label(title),
+      h("select", { value: v[key] || "", onChange: (e) => this.setField(key, e.target.value), style: inputStyle },
+        list.map(([val, text]) => h("option", { key: val, value: val }, text))));
+    const row = (...kids) => h("div", { style: { display: "flex", gap: "10px" } }, kids);
+    const parentOptions = [["", "— не указан —"]].concat(options.map(x => [x.id, m.fio(x) + " · " + m.years(x)]));
+
+    return h("div", { className: "dialog-backdrop", style: { position: "absolute", inset: 0, display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "32px 0", zIndex: 12 } },
+      h("div", { className: "dialog", style: { width: "660px", maxHeight: "100%", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px #00000040" } },
+        h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "18px 24px", borderBottom: "1px solid var(--color-text)" } },
+          h("div", null, this.kicker(isNew ? "Новый человек" : "Карточка"),
+            h("div", { style: { fontSize: "20px", fontWeight: 600, marginTop: "3px" } }, isNew ? "Добавление в древо" : m.fio(v)),
+            h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10.5px", color: "#201e1d8c", marginTop: "6px" } },
+              isMod ? "Изменения применяются сразу — вы модератор" : "Изменения уйдут модератору на проверку")),
+          h("button", { onClick: () => this.setState({ form: null, editing: false }), className: "btn btn-icon btn-ghost" }, "×")),
+
+        h("div", { style: { overflow: "auto", padding: "18px 24px 24px" } },
+          row(field("surname", "Фамилия", { hint: "Назукин" }), field("name", "Имя", { hint: "Василий" })),
+          row(field("patronymic", "Отчество", { hint: "Фёдорович" }), field("maidenName", "Девичья фамилия")),
+          row(select("sex", "Пол", [["m", "мужской"], ["f", "женский"]]),
+            select("status", "Достоверность", [["confirmed", "подтверждено документом"], ["unknown", "со слов родных"], ["hypothesis", "гипотеза"]])),
+          row(field("birthDate", "Дата рождения", { hint: "08.04.1988 или ок. 1910" }), field("deathDate", "Дата смерти", { hint: "до 1988" })),
+          row(field("birthPlace", "Место рождения"), field("deathPlace", "Место смерти")),
+
+          h("div", { style: { borderTop: "1px solid var(--color-text)", margin: "8px 0 14px", paddingTop: "12px" } }, this.kicker("Связи")),
+          row(select("fatherId", "Отец", parentOptions), select("motherId", "Мать", parentOptions)),
+          h("div", { style: { marginBottom: "12px" } }, label("Супруги"),
+            h("div", { style: { display: "flex", flexWrap: "wrap", gap: "6px" } },
+              options.length ? options.map(x => {
+                const on = (v.spouseIds || []).includes(x.id);
+                return h("button", { key: x.id, type: "button",
+                  onClick: () => this.setField("spouseIds", on ? v.spouseIds.filter(z => z !== x.id) : [...(v.spouseIds || []), x.id]),
+                  style: { border: "1px solid " + (on ? "var(--color-accent-2)" : "#201e1d26"), background: on ? "var(--color-accent-2)" : "transparent", color: on ? "#fff" : "var(--color-text)", font: "inherit", fontSize: "12.5px", padding: "5px 10px", cursor: "pointer" } },
+                  m.shortName(x));
+              }) : h("span", { style: { fontSize: "12.5px", color: "#201e1d8c" } }, "Пока некого выбрать"))),
+
+          h("div", { style: { borderTop: "1px solid var(--color-text)", margin: "8px 0 14px", paddingTop: "12px" } }, this.kicker("Биография и источники")),
+          field("bio", "Чем занимался, где жил, что известно от родных", { area: true, rows: 4 }),
+          field("sources", "Архив, фонд, опись, дело, ссылки", { area: true, rows: 3, hint: "ГАПК ф. 719 оп. 11 д. 1234, л. 45" }),
+
+          isMod ? h("div", { style: { display: "flex", gap: "18px", alignItems: "center", padding: "10px 0", borderTop: "1px solid #201e1d14", marginBottom: "10px" } },
+            h("label", { style: { display: "flex", gap: "8px", alignItems: "center", fontSize: "13.5px" } },
+              h("input", { type: "checkbox", checked: !!v.living, onChange: (e) => this.setField("living", e.target.checked) }), "живущий — гостям не показывать"),
+            h("label", { style: { display: "flex", gap: "8px", alignItems: "center", fontSize: "13.5px" } },
+              h("input", { type: "checkbox", checked: !!v.minor, onChange: (e) => this.setField("minor", e.target.checked) }), "несовершеннолетний")) : null,
+
+          h("div", { style: { borderTop: "1px solid var(--color-text)", margin: "8px 0 12px", paddingTop: "12px" } }, this.kicker("Фотографии")),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: "7px" } },
+            (f.photos || []).map((ph, i) => h("div", { key: i, style: { position: "relative", aspectRatio: "3/4", background: "#000", backgroundImage: "url(" + ph.src + ")", backgroundSize: "cover", backgroundPosition: "center", border: "1px solid #201e1d33" } },
+              h("button", { onClick: () => this.setState({ form: { ...f, photos: f.photos.filter((_, j) => j !== i) } }), title: "Убрать", style: { position: "absolute", right: "3px", top: "3px", width: "18px", height: "18px", border: "none", background: "#201e1dcc", color: "#fff", fontSize: "11px", cursor: "pointer" } }, "×"),
+              h("input", { value: ph.caption, onChange: (e) => { const arr = f.photos.slice(); arr[i] = { ...arr[i], caption: e.target.value }; this.setState({ form: { ...f, photos: arr } }); }, placeholder: "подпись",
+                style: { position: "absolute", left: 0, right: 0, bottom: 0, width: "100%", boxSizing: "border-box", border: "none", background: "#f9f4ed", font: "inherit", fontSize: "9.5px", padding: "3px 4px", color: "var(--color-text)", outline: "none" } }))),
+            h("label", { style: { aspectRatio: "3/4", border: "1px dashed #201e1d59", background: "#fff9", display: "grid", placeItems: "center", cursor: "pointer", fontSize: "11px", color: "#201e1d8c", textAlign: "center", padding: "4px" } }, "+ фото",
+              h("input", { type: "file", accept: "image/*", multiple: true, onChange: (e) => this.onDraftPhotos(e), style: { display: "none" } }))),
+          h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10px", color: "#201e1d8c", marginTop: "7px" } },
+            "Снимок уменьшается в браузере и теряет EXIF ещё до отправки: геометка и модель камеры на сервер не попадают.")),
+
+        h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", padding: "14px 24px", borderTop: "1px solid var(--color-divider)" } },
+          h("button", { onClick: () => this.setState({ form: null, editing: false }), className: "btn btn-secondary" }, "Отмена"),
+          h("button", { onClick: () => this.submitForm(), className: "btn btn-primary" }, isMod ? "Сохранить" : "Отправить на проверку"))));
   }
 
   renderModPanel() {
@@ -563,7 +770,7 @@ class App extends React.Component {
             h("div", { style: { width: "56px", height: "56px", background: "#000", backgroundImage: "url(" + row.src + ")", backgroundSize: "cover", backgroundPosition: "center", border: "1px solid #201e1d33" } }),
             h("div", { style: { fontSize: "13px", lineHeight: 1.35, wordBreak: "break-all" } }, row.name),
             h("select", { value: row.personId, onChange: (e) => { const arr = s.scanRows.slice(); arr[i] = { ...arr[i], personId: e.target.value, auto: false }; this.setState({ scanRows: arr }); }, style: { width: "100%", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "13px", padding: "7px 8px", color: "var(--color-text)" } },
-              (s.people || []).map(p => h("option", { key: p.id, value: p.id }, p.name + " · " + this.m.years(p)))),
+              (s.people || []).map(p => h("option", { key: p.id, value: p.id }, this.m.fio(p) + " · " + this.m.years(p)))),
             h("span", { style: { fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".1em", textTransform: "uppercase", color: row.auto ? "var(--color-accent-2)" : "#201e1d8c", textAlign: "right" } }, row.auto ? "авто" : "вручную")))),
         h("div", { style: { padding: "14px 24px", borderTop: "1px solid #201e1d1a", display: "flex", gap: "8px", alignItems: "center" } },
           h("button", { onClick: () => this.applyScans(), className: "btn btn-primary" }, s.role === "Модератор" ? "Добавить в карточки" : "Отправить на модерацию"),

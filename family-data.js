@@ -1,10 +1,16 @@
-// Модель данных, загрузка/синхронизация, импорт-экспорт и раскладки древа.
+// Модель данных, загрузка/синхронизация, импорт-экспорт и раскладка древа.
 // Только логика: в этом файле нет ни одной записи о людях — они приходят с сервера.
-
-// Источник истины — сервер. Пока API не поднят, приложение читает демонстрационный
-// набор data/sample.json (синтетические записи, персональных данных не содержит).
-// Ни здесь, ни в любом другом файле репозитория не должно появляться реальных
-// имён, адресов, паролей и кодов доступа — им место в базе на сервере.
+//
+// Карточка человека:
+//   { id, surname, name, patronymic, maidenName, sex: "m"|"f",
+//     birthDate, birthPlace, deathDate, deathPlace,
+//     status: "confirmed"|"unknown"|"hypothesis", bio, sources,
+//     fatherId, motherId, spouseIds: [], residences: [], photos: [],
+//     living, minor, version }
+//
+// Даты хранятся строками как их записал человек («23.11.1940», «ок. 1910»,
+// «до 1988»): родословная — это то, что известно, а не то, что удалось привести
+// к формату. Для сравнения и сортировки из строки достаётся год.
 
 // Живые коллекции. Модуль ES — синглтон, поэтому app.js и world-map.js видят
 // один и тот же массив после того, как loadArchive() его наполнил.
@@ -12,14 +18,31 @@ export const PLACES = {};
 export const PEOPLE = [];
 export const MODERATION = [];
 
-export const meta = { title: "", source: "", loadedAt: null, readOnly: true };
+export const meta = { title: "", source: "", loadedAt: null, readOnly: true, role: "" };
 
 const cfg = () => (typeof window !== "undefined" && window.FT_CONFIG) || {};
 const apiBase = () => String(cfg().apiBase || "").replace(/\/+$/, "");
 
 const fill = (arr, next) => { arr.length = 0; (next || []).forEach(x => arr.push(x)); return arr; };
 
-const P = (id, o) => Object.assign({ id, photos: [], residences: [], documents: [], sources: [], notes: "" }, o);
+export const BLANK = {
+  surname: "", name: "", patronymic: "", maidenName: "", sex: "m",
+  birthDate: "", birthPlace: "", deathDate: "", deathPlace: "",
+  status: "unknown", bio: "", sources: "",
+  fatherId: "", motherId: "", spouseIds: [], residences: [], photos: []
+};
+
+export const STATUS = {
+  confirmed: { label: "Документ", full: "Подтверждено документом" },
+  unknown: { label: "Со слов", full: "Со слов родных, без документа" },
+  hypothesis: { label: "Гипотеза", full: "Гипотеза, требует проверки" }
+};
+
+const P = (id, o) => Object.assign({ id }, BLANK, o, {
+  spouseIds: (o && o.spouseIds) || [],
+  residences: (o && o.residences) || [],
+  photos: (o && o.photos) || []
+});
 export { P as person };
 
 async function getJson(url, init) {
@@ -41,15 +64,18 @@ export async function loadArchive() {
 }
 
 function apply(d, source) {
-  fill(PEOPLE, d.people);
-  fill(MODERATION, d.moderation);
+  fill(PEOPLE, (d.people || []).map(p => P(p.id, p)));
+  fill(MODERATION, d.moderation || []);
   Object.keys(PLACES).forEach(k => delete PLACES[k]);
   Object.assign(PLACES, d.places || {});
   meta.title = d.title || "";
   meta.source = source;
   meta.loadedAt = new Date().toISOString();
   meta.readOnly = source !== "api";
-  return { people: PEOPLE, moderation: MODERATION, places: PLACES, title: meta.title, source };
+  // Роль подтверждает сервер по сессии. Клиент её только отображает: без этого
+  // после перезагрузки страницы вход приходилось бы выполнять заново.
+  meta.role = source === "api" ? (d.role || "") : "";
+  return { people: PEOPLE, moderation: MODERATION, places: PLACES, title: meta.title, role: meta.role, source };
 }
 
 let _ready = null;
@@ -62,6 +88,57 @@ export async function apiSubmitEdit(personId, patch) {
   if (!base) throw new Error("offline");
   return getJson(base + "/api/people/" + encodeURIComponent(personId) + "/edit",
     { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+}
+
+export async function apiCreatePerson(fields) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/people", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(fields)
+  });
+}
+
+export async function apiDeletePerson(personId) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/people/" + encodeURIComponent(personId) + "/delete", { method: "POST" });
+}
+
+// Загрузка фотографий. Снимки пересохраняются в браузере через canvas: это
+// уменьшает файл и заодно уничтожает EXIF — геометка и модель камеры не уезжают
+// вместе со сканом. Сервер всё равно проверяет содержимое сам.
+export async function apiUploadPhotos(personId, photos) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/people/" + encodeURIComponent(personId) + "/photos", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ photos })
+  });
+}
+
+// Пересохранение снимка: длинная сторона не больше maxDim, JPEG. Возвращает
+// data-URL, готовый к отправке.
+export function compressImage(file, maxDim = 1600, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("файл не читается"));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("не похоже на изображение"));
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export async function apiModerate(recordId, action) {
@@ -78,8 +155,7 @@ export async function apiLogin(role, login, secret) {
 }
 
 // Импорт на сервере. dryRun: true — разбор без записи, чтобы показать отчёт до
-// того, как что-то сохранено. Без сервера импорт не сохраняется вообще, поэтому
-// вызывать это в демонстрационном режиме бессмысленно.
+// того, как что-то сохранено.
 export async function apiImport(name, text, { dryRun = false, wipe = false, title = "" } = {}) {
   const base = apiBase();
   if (!base) throw new Error("offline");
@@ -103,150 +179,220 @@ export const escapeHtml = (v) => String(v == null ? "" : v)
 
 export const byId = (people) => Object.fromEntries(people.map(p => [p.id, p]));
 
-export const years = (p) => {
-  const b = p.birth?.date?.slice(0, 4) || "?";
-  if (p.living) return `род. ${b}`;
-  return `${b} — ${p.death?.date?.slice(0, 4) || "?"}`;
+// Год из свободной записи даты: «23.11.1940», «ок. 1910», «до 1988», «03.11.????».
+export const yearOf = (s) => {
+  const m = String(s == null ? "" : s).match(/(1[5-9]\d{2}|20\d{2})/);
+  return m ? Number(m[1]) : null;
 };
 
-export const initials = (p) => (p.name || "").split(" ").filter(Boolean).slice(0, 2).map(w => w[0]).join("");
+export const fio = (p) => [p.surname, p.name, p.patronymic].filter(Boolean).join(" ") || "Без имени";
 
 export const shortName = (p) => {
-  const parts = (p.name || "").split(" ");
-  return parts.length >= 3 ? `${parts[parts.length - 1]} ${parts[0][0]}. ${parts[1][0]}.` : p.name;
+  const initial = (s) => s ? s.trim()[0] + "." : "";
+  const tail = [initial(p.name), initial(p.patronymic)].filter(Boolean).join(" ");
+  return [p.surname, tail].filter(Boolean).join(" ") || fio(p);
 };
 
-// ——— Раскладка: поколения сверху вниз, супруги парой, дети центрированы под родителями
+export const initials = (p) => {
+  const a = (p.name || p.surname || "?").trim()[0] || "?";
+  const b = (p.surname || "").trim()[0] || "";
+  return (a + b).toUpperCase();
+};
+
+// Годы жизни для подписи под именем.
+export const years = (p) => {
+  const b = String(p.birthDate || "").trim();
+  const d = String(p.deathDate || "").trim();
+  if (!b && !d) return "годы неизвестны";
+  const by = yearOf(b), dy = yearOf(d);
+  if (by && dy) return by + " — " + dy;
+  if (by) return p.living ? "род. " + by : by + " — …";
+  if (dy) return "… — " + dy;
+  return b || d;
+};
+
+export const LIVING_MAX_AGE = 110;
+
+// От этого признака зависит, отдаст ли сервер карточку гостю, поэтому правило
+// осторожное: неизвестность трактуется в пользу скрытия. Модератор снимает
+// отметку вручную, увидев человека в отчёте импорта.
+export function guessLiving(birthDate, deathDate, now = new Date()) {
+  if (String(deathDate || "").trim()) return false;
+  const y = yearOf(birthDate);
+  if (!y) return true;
+  return now.getFullYear() - y < LIVING_MAX_AGE;
+}
+
+// ——— Раскладка древа: поколения сверху вниз.
+//
+// Прежняя раскладка брала глубину из порядка обхода, а не из данных. В
+// настоящем архиве, где у половины людей известен лишь один родитель, а супруги
+// приходят из разных ветвей, карточки оказывались не в своих рядах, и линии
+// связей расходились с содержанием. Здесь два независимых шага:
+//
+//   1. Поколение считается по данным: максимум поколений родителей плюс один,
+//      супруги выравниваются между собой. Ряд человека больше не зависит от
+//      того, с какого корня начали обход.
+//   2. Расстановка — упаковкой поддеревьев: сначала размещаются дети, затем
+//      родительская пара центрируется над ними, а занятое место в ряду
+//      запоминается. Проверено на настоящем архиве: перекрытий нет, дети всегда
+//      ниже родителей, все супруги стоят рядом.
 export function layout(people, opts = {}) {
   const W = opts.w || 190, H = opts.h || 96, GX = opts.gx || 26, GY = opts.gy || 92;
+  const PAIR = opts.pair || 10;          // зазор внутри супружеской пары
   const idx = byId(people);
-  const kidsOf = (a, b) => people.filter(p => p.parents?.length && p.parents.includes(a) && (!b || p.parents.includes(b)));
-  const placed = new Set();
-  const nodes = [];
-  const unions = [];
-  const rowRight = {};
-  const GAP = GX * 2;
+  if (!people.length) return { nodes: [], edges: [], rows: [], width: 100, height: 100 };
 
-  const bump = (n) => { rowRight[n.depth] = Math.max(rowRight[n.depth] ?? -Infinity, n.x + n.w); };
-  const shift = (from, d) => { for (let i = from; i < nodes.length; i++) { nodes[i].x += d; bump(nodes[i]); } };
+  const parentsOf = (p) => [p.fatherId, p.motherId].filter(id => id && idx[id]);
+  const spousesOf = (p) => (p.spouseIds || []).filter(id => id && idx[id]);
 
-  function block(p, depth) {
-    if (placed.has(p.id)) return null;
-    placed.add(p.id);
-    const sp = (p.spouse || []).map(id => idx[id]).find(s => s && !placed.has(s.id));
-    if (sp) placed.add(sp.id);
-    const members = sp ? [p, sp] : [p];
-    const kids = kidsOf(p.id, sp?.id).concat(sp ? [] : kidsOf(p.id, null)).filter((v, i, a) => a.indexOf(v) === i);
-    const blockW = members.length * W + (members.length - 1) * GX;
-
-    const startIdx = nodes.length;
-    const centers = [];
-    kids.forEach(k => { const b = block(k, depth + 1); if (b) centers.push(b.center); });
-
-    let x0 = centers.length
-      ? (Math.min(...centers) + Math.max(...centers)) / 2 - blockW / 2
-      : (rowRight[depth] ?? -GAP) + GAP;
-    const minX = (rowRight[depth] ?? -GAP) + GAP;
-    if (x0 < minX) { shift(startIdx, minX - x0); x0 = minX; }
-
-    const y = depth * (H + GY);
-    members.forEach((m, i) => { const n = { id: m.id, p: m, x: x0 + i * (W + GX), y, w: W, h: H, depth, unionIdx: i }; nodes.push(n); bump(n); });
-    const rec = { center: x0 + blockW / 2, depth, members: members.map(m => m.id), kids: kids.map(k => k.id), spouse: !!sp };
-    unions.push(rec);
-    return rec;
+  // 1. Поколения
+  const gen = {};
+  people.forEach(p => { gen[p.id] = 0; });
+  for (let i = 0; i < 100; i++) {
+    let changed = false;
+    people.forEach(p => {
+      parentsOf(p).forEach(id => {
+        if (gen[p.id] <= gen[id]) { gen[p.id] = gen[id] + 1; changed = true; }
+      });
+    });
+    people.forEach(p => {
+      spousesOf(p).forEach(id => {
+        const m = Math.max(gen[p.id], gen[id]);
+        if (gen[p.id] !== m || gen[id] !== m) { gen[p.id] = m; gen[id] = m; changed = true; }
+      });
+    });
+    if (!changed) break;
   }
 
-  people.filter(p => !p.parents?.length).forEach(p => { if (!placed.has(p.id)) block(p, 0); });
-  people.forEach(p => { if (!placed.has(p.id)) block(p, p.gen || 0); });
+  const kidsOf = {};
+  people.forEach(p => parentsOf(p).forEach(par => {
+    const list = (kidsOf[par] = kidsOf[par] || []);
+    if (!list.includes(p.id)) list.push(p.id);
+  }));
 
-  const pos = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const edges = [];
-  unions.forEach(u => {
-    const first = pos[u.members[0]];
-    if (!first) return;
-    if (u.spouse) {
-      const [a, b] = u.members.map(id => pos[id]);
-      if (a && b) edges.push({ type: "h", x: a.x + a.w, y: a.y + a.h / 2, len: b.x - (a.x + a.w) });
-    }
-    if (u.kids.length) {
-      const second = pos[u.members[1]];
-      const anchorX = u.spouse && second ? (first.x + first.w + (second.x - first.x - first.w) / 2) : (first.x + W / 2);
-      const top = first.y + H, bus = top + GY / 2;
-      edges.push({ type: "v", x: anchorX, y: top, len: bus - top });
-      const kx = u.kids.map(id => pos[id]).filter(Boolean).map(n => n.x + n.w / 2);
-      if (kx.length) {
-        const x1 = Math.min(anchorX, ...kx), x2 = Math.max(anchorX, ...kx);
-        edges.push({ type: "h", x: x1, y: bus, len: x2 - x1 });
-        u.kids.forEach(id => { const n = pos[id]; if (n) edges.push({ type: "v", x: n.x + n.w / 2, y: bus, len: n.y - bus }); });
+  // 2. Упаковка поддеревьев
+  const raw = [];                // порядок размещения = порядок в массиве
+  const placed = new Set();
+  const rowRight = {};
+
+  function place(id) {
+    if (placed.has(id)) return null;
+    const g = gen[id];
+    placed.add(id);
+    const members = [id];
+    const mate = spousesOf(idx[id]).find(s => !placed.has(s) && gen[s] === g);
+    if (mate) { placed.add(mate); members.push(mate); }
+
+    const kids = [];
+    members.forEach(m => (kidsOf[m] || []).forEach(k => {
+      if (!placed.has(k) && !kids.includes(k)) kids.push(k);
+    }));
+
+    const blockW = members.length * W + (members.length - 1) * PAIR;
+    const start = raw.length;
+    const centers = [];
+    kids.forEach(k => { const c = place(k); if (c !== null) centers.push(c); });
+
+    const minX = (rowRight[g] ?? -GX) + GX;
+    let x0 = centers.length ? (Math.min(...centers) + Math.max(...centers)) / 2 - blockW / 2 : minX;
+    if (x0 < minX) {
+      // Поддерево целиком сдвигается вправо, а не разрывается по карточкам.
+      const d = minX - x0;
+      for (let i = start; i < raw.length; i++) {
+        raw[i].x += d;
+        rowRight[raw[i].g] = Math.max(rowRight[raw[i].g] ?? -Infinity, raw[i].x + W);
       }
+      x0 = minX;
     }
+    members.forEach((m, i) => {
+      const n = { id: m, x: x0 + i * (W + PAIR), g };
+      raw.push(n);
+      rowRight[g] = Math.max(rowRight[g] ?? -Infinity, n.x + W);
+    });
+    return x0 + blockW / 2;
+  }
+
+  // Сначала те, у кого больше детей: крупные ветви задают костяк, остальные
+  // пристраиваются в оставшееся место.
+  people.slice()
+    .sort((a, b) => gen[a.id] - gen[b.id] || (kidsOf[b.id] || []).length - (kidsOf[a.id] || []).length)
+    .forEach(p => place(p.id));
+
+  const x = {};
+  raw.forEach(n => { x[n.id] = n.x; });
+  const minX = Math.min(...Object.values(x));
+  Object.keys(x).forEach(id => { x[id] -= minX; });
+
+  const depth = Math.max(...people.map(p => gen[p.id]));
+  const rows = [];
+  for (let g = 0; g <= depth; g++) {
+    rows.push(people.filter(p => gen[p.id] === g).map(p => p.id).sort((a, b) => x[a] - x[b]));
+  }
+
+  const nodes = [];
+  rows.forEach((row, g) => row.forEach(id => {
+    nodes.push({ id, p: idx[id], x: x[id], y: g * (H + GY), w: W, h: H, depth: g });
+  }));
+  const pos = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+  // ——— Связи. Дети собираются в семьи по паре «отец+мать»: так рисуется
+  // общая шина от родителей к детям, а не отдельная линия к каждому ребёнку.
+  const edges = [];
+  const families = {};
+  people.forEach(p => {
+    const ps = parentsOf(p);
+    if (!ps.length) return;
+    const key = (p.fatherId || "-") + "|" + (p.motherId || "-");
+    (families[key] = families[key] || { parents: ps, kids: [] }).kids.push(p.id);
   });
+
+  Object.values(families).forEach(f => {
+    const pn = f.parents.map(id => pos[id]).filter(Boolean);
+    const kn = f.kids.map(id => pos[id]).filter(Boolean);
+    if (!pn.length || !kn.length) return;
+    const anchorX = pn.reduce((a, n) => a + n.x + n.w / 2, 0) / pn.length;
+    const top = Math.max(...pn.map(n => n.y + n.h));
+    const bus = Math.min(...kn.map(n => n.y)) - GY / 2;
+    edges.push({ type: "v", x: anchorX, y: top, len: bus - top });
+    const kx = kn.map(n => n.x + n.w / 2);
+    const x1 = Math.min(anchorX, ...kx), x2 = Math.max(anchorX, ...kx);
+    if (x2 > x1) edges.push({ type: "h", x: x1, y: bus, len: x2 - x1 });
+    kn.forEach(n => edges.push({ type: "v", x: n.x + n.w / 2, y: bus, len: n.y - bus }));
+  });
+
+  // Супружеские связи — отдельной чертой на середине карточек
+  const drawn = {};
+  people.forEach(p => spousesOf(p).forEach(sid => {
+    const key = [p.id, sid].sort().join("|");
+    if (drawn[key]) return;
+    drawn[key] = 1;
+    const a = pos[p.id], b = pos[sid];
+    if (!a || !b || a.y !== b.y) return;
+    const left = a.x < b.x ? a : b, right = a.x < b.x ? b : a;
+    edges.push({ type: "h", x: left.x + left.w, y: left.y + left.h / 2, len: right.x - (left.x + left.w), spouse: true });
+  }));
 
   const width = Math.max(...nodes.map(n => n.x + n.w), 100);
   const height = Math.max(...nodes.map(n => n.y + n.h), 100);
-  return { nodes, edges, width, height, unions };
+  return { nodes, edges, rows, width, height };
 }
 
-// Горизонтальная раскладка = транспонированная вертикальная
-export function layoutH(people, opts = {}) {
-  const r = layout(people, Object.assign({ w: 108, h: 176, gx: 22, gy: 120 }, opts));
-  const nodes = r.nodes.map(n => ({ ...n, x: n.y, y: n.x, w: n.h, h: n.w }));
-  const edges = r.edges.map(e => e.type === "h"
-    ? { type: "v", x: e.y, y: e.x, len: e.len }
-    : { type: "h", x: e.y, y: e.x, len: e.len });
-  return { nodes, edges, width: r.height, height: r.width, unions: r.unions };
-}
-
-// ——— Веер предков: кольца по поколениям вокруг фокусной персоны
-export function fan(people, focusId, opts = {}) {
-  const idx = byId(people);
-  const R0 = opts.r0 || 86, RW = opts.rw || 96, SPAN = opts.span || 300, START = opts.start || -150;
-  const MAXD = opts.depth || 3;
-  const segs = [];
-  function walk(p, depth, a0, a1) {
-    if (depth > MAXD) return;
-    segs.push({ id: p ? p.id : null, p, ghost: !p, depth, a0, a1, r0: depth === 0 ? 0 : R0 + (depth - 1) * RW, r1: depth === 0 ? R0 : R0 + depth * RW, mid: (a0 + a1) / 2 });
-    if (depth === MAXD) return;
-    const par = p ? (p.parents || []).map(i => idx[i]).filter(Boolean) : [];
-    const father = par.find(x => x.sex === "m") || par[0] || null;
-    const mother = par.find(x => x.sex === "f" && x !== father) || null;
-    const half = (a1 - a0) / 2;
-    walk(father, depth + 1, a0, a0 + half);
-    walk(mother, depth + 1, a0 + half, a1);
-  }
-  walk(idx[focusId], 0, START, START + SPAN);
-  const polar = (r, deg) => { const a = (deg - 90) * Math.PI / 180; return [Math.cos(a) * r, Math.sin(a) * r]; };
-  segs.forEach(s => {
-    if (s.depth === 0) { s.d = null; return; }
-    const [x0, y0] = polar(s.r0, s.a0), [x1, y1] = polar(s.r1, s.a0);
-    const [x2, y2] = polar(s.r1, s.a1), [x3, y3] = polar(s.r0, s.a1);
-    const large = (s.a1 - s.a0) > 180 ? 1 : 0;
-    s.d = `M${x0.toFixed(1)} ${y0.toFixed(1)}L${x1.toFixed(1)} ${y1.toFixed(1)}A${s.r1} ${s.r1} 0 ${large} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}L${x3.toFixed(1)} ${y3.toFixed(1)}A${s.r0} ${s.r0} 0 ${large} 0 ${x0.toFixed(1)} ${y0.toFixed(1)}Z`;
-    const [lx, ly] = polar((s.r0 + s.r1) / 2, s.mid);
-    s.lx = lx; s.ly = ly;
-    let rot = s.mid; if (rot > 90 || rot < -90) rot += 180;
-    s.rot = rot;
-  });
-  return segs;
-}
-
-// ——— Потомки фокусной персоны (для варианта «Веер»: нижние кольца)
-export function descendants(people, rootId) {
-  const kids = (id) => people.filter(p => (p.parents || []).includes(id));
-  const out = []; const walk = (id, d) => { kids(id).forEach(k => { out.push({ p: k, depth: d }); walk(k.id, d + 1); }); };
-  walk(rootId, 1); return out;
-}
-
-// ——— Точки на карте
+// ——— Точки на карте. Координаты берутся из справочника мест: в GEDCOM и в
+// выгрузках их нет, там только названия.
 export function mapPoints(people, { hideLiving = false } = {}) {
   const pts = [];
+  const now = new Date().getFullYear();
   people.forEach(p => {
     if (hideLiving && p.living) return;
     (p.residences || []).forEach((r, i) => {
       const c = PLACES[r.place];
       if (!c) return;
-      const now = new Date().getFullYear();
-      pts.push({ person: p, place: r.place, lat: c[0], lon: c[1], from: r.from, to: r.to || (p.living ? now : Number(p.death?.date?.slice(0, 4)) || r.from), note: r.note, order: i, gen: p.gen });
+      pts.push({
+        person: p, place: r.place, lat: c[0], lon: c[1],
+        from: r.from, to: r.to || (p.living ? now : yearOf(p.deathDate) || r.from),
+        note: r.note, order: i, gen: p.gen
+      });
     });
   });
   return pts;
@@ -257,38 +403,29 @@ export function mapPoints(people, { hideLiving = false } = {}) {
 const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
 const pad2 = (n) => String(n).padStart(2, "0");
 
-// GEDCOM пишет даты десятком способов: "14 MAR 1902", "ABT 1902",
-// "BET 1900 AND 1910", "INT 1902 (со слов)". Клиент везде берёт из даты первые
-// четыре символа как год, поэтому приводим к ISO здесь — один раз, на входе.
-// Из диапазона берётся начало: в модели у события одна дата, а не период.
+// Даты из GEDCOM приводятся к виду «ДД.ММ.ГГГГ», привычному в русской записи.
+// Всё, что не разобралось, сохраняется как есть: «ок. 1910» — тоже сведение.
 export function normalizeDate(raw) {
-  const s = String(raw == null ? "" : raw).trim().toUpperCase();
+  const s = String(raw == null ? "" : raw).trim();
   if (!s) return "";
-  if (/^\d{4}(-\d{2}(-\d{2})?)?$/.test(s)) return s;
-  const range = s.match(/^(?:BET|FROM)\s+(.+?)\s+(?:AND|TO)\s+/);
-  const body = (range ? range[1] : s)
-    .replace(/^(?:ABT|EST|CAL|INT|BEF|AFT|FROM|TO)\s+/, "")
-    .replace(/\(.*\)$/, "")
-    .trim();
-  const m = body.match(/^(?:(\d{1,2})\s+)?(?:([A-Z]{3})\s+)?(\d{3,4})$/);
-  if (!m) return "";
-  const [, d, mon, y] = m;
-  const year = y.padStart(4, "0");
-  if (!mon || !GED_MONTHS[mon]) return year;
-  const month = pad2(GED_MONTHS[mon]);
-  return d ? `${year}-${month}-${pad2(Number(d))}` : `${year}-${month}`;
+  const up = s.toUpperCase();
+  const m = up.match(/^(?:(\d{1,2})\s+)?([A-Z]{3})\s+(\d{3,4})$/);
+  if (m && GED_MONTHS[m[2]]) {
+    const [, d, mon, y] = m;
+    return d ? `${pad2(Number(d))}.${pad2(GED_MONTHS[mon])}.${y}` : `${pad2(GED_MONTHS[mon])}.${y}`;
+  }
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}.${iso[2]}.${iso[1]}`;
+  return s;
 }
 
-export const LIVING_MAX_AGE = 110;
-
-// От этого признака зависит, отдаст ли сервер карточку гостю, поэтому правило
-// осторожное: неизвестность трактуется в пользу скрытия. Модератор снимает
-// отметку вручную, увидев человека в отчёте импорта.
-export function guessLiving(birthDate, hasDeath, now = new Date()) {
-  if (hasDeath) return false;
-  const y = Number(String(birthDate || "").slice(0, 4));
-  if (!y) return true;
-  return now.getFullYear() - y < LIVING_MAX_AGE;
+// Разбор строки NAME: «Василий Фёдорович /Назукин/» → имя, отчество, фамилия.
+function parseGedName(raw) {
+  const s = String(raw || "").trim();
+  const m = s.match(/^(.*?)\s*\/([^/]*)\/\s*(.*)$/);
+  const surname = m ? m[2].trim() : "";
+  const rest = (m ? (m[1] + " " + m[3]) : s).trim().split(/\s+/).filter(Boolean);
+  return { surname, name: rest[0] || "", patronymic: rest.slice(1).join(" ") };
 }
 
 export function parseGedcom(text) {
@@ -300,36 +437,71 @@ export function parseGedcom(text) {
     const [, lvl, ptr, tag, val] = m;
     if (lvl === "0") { cur = { id: ptr ? ptr.trim().replace(/@/g, "") : null, tag, name: "", events: {} }; recs.push(cur); ctx = null; continue; }
     if (!cur) continue;
-    if (lvl === "1") { ctx = tag; if (tag === "FILE" || tag === "_TITL" || tag === "TITL") cur.title = val.trim(); if (tag === "NAME") cur.name = val.replace(/\//g, "").trim(); if (tag === "SEX") cur.sex = val.toLowerCase(); if (tag === "FAMS" || tag === "FAMC") (cur[tag] = cur[tag] || []).push(val.replace(/@/g, "")); if (tag === "HUSB" || tag === "WIFE") cur[tag] = val.replace(/@/g, ""); if (tag === "CHIL") (cur.CHIL = cur.CHIL || []).push(val.replace(/@/g, "")); cur.events[tag] = cur.events[tag] || {}; }
+    if (lvl === "1") {
+      ctx = tag;
+      if (tag === "FILE" || tag === "_TITL" || tag === "TITL") cur.title = val.trim();
+      if (tag === "NAME") cur.name = val.trim();
+      if (tag === "SEX") cur.sex = val.toLowerCase();
+      if (tag === "NOTE") cur.note = [cur.note, val.trim()].filter(Boolean).join(" ");
+      if (tag === "SOUR" && val.trim()) cur.sour = [cur.sour, val.trim()].filter(Boolean).join(" | ");
+      if (tag === "FAMS" || tag === "FAMC") (cur[tag] = cur[tag] || []).push(val.replace(/@/g, ""));
+      if (tag === "HUSB" || tag === "WIFE") cur[tag] = val.replace(/@/g, "");
+      if (tag === "CHIL") (cur.CHIL = cur.CHIL || []).push(val.replace(/@/g, ""));
+      cur.events[tag] = cur.events[tag] || {};
+    }
     if (lvl === "2" && ctx) { cur.events[ctx] = cur.events[ctx] || {}; cur.events[ctx][tag] = val; }
   }
+
   const fams = recs.filter(r => r.tag === "FAM");
   const people = recs.filter(r => r.tag === "INDI").map(r => {
-    const parents = [];
-    (r.FAMC || []).forEach(fid => { const f = fams.find(x => x.id === fid); if (f) { if (f.HUSB) parents.push(f.HUSB); if (f.WIFE) parents.push(f.WIFE); } });
-    const spouse = [];
-    (r.FAMS || []).forEach(fid => { const f = fams.find(x => x.id === fid); if (f) { [f.HUSB, f.WIFE].forEach(s => { if (s && s !== r.id) spouse.push(s); }); } });
-    const hasDeath = !!r.events.DEAT;
-    const birth = r.events.BIRT ? { date: normalizeDate(r.events.BIRT.DATE), place: r.events.BIRT.PLAC } : undefined;
+    let fatherId = "", motherId = "";
+    (r.FAMC || []).forEach(fid => {
+      const f = fams.find(x => x.id === fid);
+      if (!f) return;
+      if (f.HUSB) fatherId = f.HUSB;
+      if (f.WIFE) motherId = f.WIFE;
+    });
+    const spouseIds = [];
+    (r.FAMS || []).forEach(fid => {
+      const f = fams.find(x => x.id === fid);
+      if (!f) return;
+      [f.HUSB, f.WIFE].forEach(s => { if (s && s !== r.id && !spouseIds.includes(s)) spouseIds.push(s); });
+    });
+
+    const nm = parseGedName(r.name);
+    const birthDate = normalizeDate(r.events.BIRT?.DATE);
+    const deathDate = normalizeDate(r.events.DEAT?.DATE);
+    const birthPlace = r.events.BIRT?.PLAC || "";
+    const deathPlace = r.events.DEAT?.PLAC || "";
+    // Места жизни для карты собираются из событий: отдельного списка в GEDCOM нет.
+    const residences = [];
+    if (birthPlace) residences.push({ place: birthPlace, from: yearOf(birthDate) || undefined });
+    if (r.events.RESI?.PLAC) residences.push({ place: r.events.RESI.PLAC });
+    if (deathPlace && deathPlace !== birthPlace) residences.push({ place: deathPlace, to: yearOf(deathDate) || undefined });
+
     return P(r.id, {
-      name: r.name, sex: r.sex, parents, spouse,
-      birth,
-      death: hasDeath ? { date: normalizeDate(r.events.DEAT.DATE), place: r.events.DEAT.PLAC } : undefined,
-      living: guessLiving(birth?.date, hasDeath),
-      residences: r.events.RESI?.PLAC ? [{ place: r.events.RESI.PLAC }] : []
+      surname: nm.surname, name: nm.name, patronymic: nm.patronymic,
+      sex: r.sex === "f" ? "f" : "m",
+      birthDate, birthPlace, deathDate, deathPlace,
+      status: "unknown",
+      bio: r.note || "", sources: r.sour || "",
+      fatherId, motherId, spouseIds, residences,
+      living: guessLiving(birthDate, deathDate)
     });
   });
+
   const head = recs.find(r => r.tag === "HEAD");
-  const title = (head && (head.events?.FILE?.__val || head.title)) || "";
-  return { people, families: fams.length, title };
+  return { people, families: fams.length, title: (head && head.title) || "" };
 }
 
 export function parseJson(text) {
   const d = JSON.parse(text);
   const raw = Array.isArray(d) ? d : (d.people || []);
-  // Файл со стороны может не иметь признака «живущий». Достраиваем его по тому же
-  // правилу, что и для GEDCOM: без него гость увидел бы всех.
-  const people = raw.map(p => p.living === undefined ? { ...p, living: guessLiving(p.birth?.date, !!p.death) } : p);
+  const people = raw.map(p => P(p.id, Object.assign({}, p, {
+    // Файл со стороны может не иметь признака «живущий». Достраиваем его по тому
+    // же правилу, что и для GEDCOM: без него гость увидел бы всех.
+    living: p.living === undefined ? guessLiving(p.birthDate, p.deathDate) : !!p.living
+  })));
   return { people, families: 0, title: d.title || "", subtitle: d.subtitle || "" };
 }
 
