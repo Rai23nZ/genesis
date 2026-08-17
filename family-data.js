@@ -241,29 +241,68 @@ export function layout(people, opts = {}) {
   const W = opts.w || 190, H = opts.h || 96, GX = opts.gx || 26, GY = opts.gy || 92;
   const PAIR = opts.pair || 10;          // зазор внутри супружеской пары
   const idx = byId(people);
-  if (!people.length) return { nodes: [], edges: [], rows: [], width: 100, height: 100 };
+  if (!people.length) return { nodes: [], edges: [], rows: [], warnings: [], width: 100, height: 100 };
 
   const parentsOf = (p) => [p.fatherId, p.motherId].filter(id => id && idx[id]);
   const spousesOf = (p) => (p.spouseIds || []).filter(id => id && idx[id]);
 
-  // 1. Поколения
+  // 1. Поколения — система разностей, а не подтягивание к максимуму.
+  //
+  // Прежнее правило «поколение = максимум родительских + 1, супруги
+  // выравниваются по глубокому» разрывало родные семьи: если род мужа
+  // задокументирован на колено дальше, жена уезжала строкой ниже своих братьев,
+  // а её связь с родителями пересекала целую строку и выглядела оборванной.
+  //
+  // Здесь два условия решаются вместе:
+  //     уровень(ребёнок) − уровень(родителя) = 1
+  //     уровень(супруга) − уровень(супруги) = 0
+  // Взвешенный union-find держит разность уровней внутри связной компоненты, и
+  // тогда вниз уезжает не человек, а вверх поднимается вся более глубокая
+  // ветвь — брат с сестрой остаются на одной строке, супруги тоже.
+  const parent = {}, offset = {};
+  const warnings = [];
+  people.forEach(p => { parent[p.id] = p.id; offset[p.id] = 0; });
+
+  const find = (id) => {
+    let root = id, shift = 0;
+    while (parent[root] !== root) { shift += offset[root]; root = parent[root]; }
+    // Сжатие пути: путь до корня переписывается сразу, иначе на длинных линиях
+    // поиск делает лишние проходы.
+    let cur = id, acc = shift;
+    while (parent[cur] !== cur) {
+      const next = parent[cur], step = offset[cur];
+      parent[cur] = root; offset[cur] = acc;
+      acc -= step; cur = next;
+    }
+    return { root, shift };
+  };
+
+  // Требование: уровень(b) − уровень(a) = d
+  const link = (a, b, d, note) => {
+    const ra = find(a), rb = find(b);
+    if (ra.root === rb.root) {
+      if (ra.shift + d !== rb.shift) warnings.push(note);
+      return;
+    }
+    parent[rb.root] = ra.root;
+    offset[rb.root] = ra.shift + d - rb.shift;
+  };
+
+  people.forEach(p => {
+    parentsOf(p).forEach(id => link(id, p.id, 1, `${id} → ${p.id}: поколения не сходятся`));
+    spousesOf(p).forEach(id => link(p.id, id, 0, `${p.id} ↔ ${id}: супруги в разных поколениях`));
+  });
+
+  // Уровень определён с точностью до сдвига внутри компоненты — каждую
+  // компоненту сажаем на нулевую строку.
   const gen = {};
-  people.forEach(p => { gen[p.id] = 0; });
-  for (let i = 0; i < 100; i++) {
-    let changed = false;
-    people.forEach(p => {
-      parentsOf(p).forEach(id => {
-        if (gen[p.id] <= gen[id]) { gen[p.id] = gen[id] + 1; changed = true; }
-      });
-    });
-    people.forEach(p => {
-      spousesOf(p).forEach(id => {
-        const m = Math.max(gen[p.id], gen[id]);
-        if (gen[p.id] !== m || gen[id] !== m) { gen[p.id] = m; gen[id] = m; changed = true; }
-      });
-    });
-    if (!changed) break;
-  }
+  const base = {};
+  people.forEach(p => {
+    const { root, shift } = find(p.id);
+    gen[p.id] = shift;
+    base[root] = base[root] === undefined ? shift : Math.min(base[root], shift);
+  });
+  people.forEach(p => { gen[p.id] -= base[find(p.id).root]; });
 
   const kidsOf = {};
   people.forEach(p => parentsOf(p).forEach(par => {
@@ -347,18 +386,23 @@ export function layout(people, opts = {}) {
     (families[key] = families[key] || { parents: ps, kids: [] }).kids.push(p.id);
   });
 
+  // У каждого ребра перечислены участники связи: по этому списку интерфейс
+  // подсвечивает родство выбранного человека. Стойка и шина принадлежат всей
+  // семье, отвод — только своему ребёнку, поэтому выбор ребёнка подсвечивает
+  // путь до родителей, но не отводы к его братьям.
   Object.values(families).forEach(f => {
     const pn = f.parents.map(id => pos[id]).filter(Boolean);
     const kn = f.kids.map(id => pos[id]).filter(Boolean);
     if (!pn.length || !kn.length) return;
+    const all = f.parents.concat(f.kids);
     const anchorX = pn.reduce((a, n) => a + n.x + n.w / 2, 0) / pn.length;
     const top = Math.max(...pn.map(n => n.y + n.h));
     const bus = Math.min(...kn.map(n => n.y)) - GY / 2;
-    edges.push({ type: "v", x: anchorX, y: top, len: bus - top });
+    edges.push({ type: "v", x: anchorX, y: top, len: bus - top, ids: all });
     const kx = kn.map(n => n.x + n.w / 2);
     const x1 = Math.min(anchorX, ...kx), x2 = Math.max(anchorX, ...kx);
-    if (x2 > x1) edges.push({ type: "h", x: x1, y: bus, len: x2 - x1 });
-    kn.forEach(n => edges.push({ type: "v", x: n.x + n.w / 2, y: bus, len: n.y - bus }));
+    if (x2 > x1) edges.push({ type: "h", x: x1, y: bus, len: x2 - x1, ids: all });
+    kn.forEach(n => edges.push({ type: "v", x: n.x + n.w / 2, y: bus, len: n.y - bus, ids: f.parents.concat([n.id]) }));
   });
 
   // Супружеские связи — отдельной чертой на середине карточек
@@ -370,12 +414,12 @@ export function layout(people, opts = {}) {
     const a = pos[p.id], b = pos[sid];
     if (!a || !b || a.y !== b.y) return;
     const left = a.x < b.x ? a : b, right = a.x < b.x ? b : a;
-    edges.push({ type: "h", x: left.x + left.w, y: left.y + left.h / 2, len: right.x - (left.x + left.w), spouse: true });
+    edges.push({ type: "h", x: left.x + left.w, y: left.y + left.h / 2, len: right.x - (left.x + left.w), spouse: true, ids: [p.id, sid] });
   }));
 
   const width = Math.max(...nodes.map(n => n.x + n.w), 100);
   const height = Math.max(...nodes.map(n => n.y + n.h), 100);
-  return { nodes, edges, rows, width, height };
+  return { nodes, edges, rows, warnings, width, height };
 }
 
 // ——— Точки на карте. Координаты берутся из справочника мест: в GEDCOM и в

@@ -126,14 +126,17 @@ class App extends React.Component {
   // ——— Карточка: правка и добавление одной формой. Модератору сервер применяет
   // изменения сразу, родственнику ставит в очередь — решает роль сессии, не клиент.
   openForm(person) {
+    // living и minor входят в образец наравне с остальным: без них отметки не
+    // читались из карточки и при каждом открытии показывались снятыми, из-за
+    // чего выглядели неработающими.
     const blank = {
       surname: "", name: "", patronymic: "", maidenName: "", sex: "m", status: "unknown",
       birthDate: "", birthPlace: "", deathDate: "", deathPlace: "", bio: "", sources: "",
-      fatherId: "", motherId: "", spouseIds: []
+      fatherId: "", motherId: "", spouseIds: [], living: false, minor: false
     };
     const fields = person
       ? Object.keys(blank).reduce((a, k) => (a[k] = Array.isArray(blank[k]) ? (person[k] || []).slice() : (person[k] ?? blank[k]), a), {})
-      : blank;
+      : { ...blank, living: true };   // о новом человеке ничего не известно — скрываем от гостей
     this.setState({ form: { id: person ? person.id : null, fields, photos: [] }, editing: true });
   }
 
@@ -178,7 +181,11 @@ class App extends React.Component {
     const fields = {}, changes = [];
     Object.keys(f.fields).forEach(k => {
       const now = f.fields[k], was = before[k];
-      const same = Array.isArray(now) ? JSON.stringify(now.slice().sort()) === JSON.stringify((was || []).slice().sort()) : String(now || "") === String(was || "");
+      // Отметки сравниваются как отметки, а не как строки: «снято» и «поля нет»
+      // для сервера одно и то же, и лишней правки быть не должно.
+      const same = Array.isArray(now)
+        ? JSON.stringify(now.slice().sort()) === JSON.stringify((was || []).slice().sort())
+        : typeof now === "boolean" ? now === !!was : String(now || "") === String(was || "");
       if (same) return;
       fields[k] = now;
       changes.push({ field: LABEL[k] || k, before: show(k, was), after: show(k, now) });
@@ -495,9 +502,32 @@ class App extends React.Component {
       .concat((p.residences || []).map(r => r.place)).filter(Boolean).join(" ").toLowerCase().includes(q);
     const depths = [...new Set(L.nodes.map(n => n.depth))].sort((a, b) => a - b);
     const bands = depths.map(d => h("div", { key: "band" + d, style: { position: "absolute", left: 0, top: (d * (122 + 92) - 30) + "px", width: L.width + "px", borderTop: "1px dashed #201e1d26", paddingTop: "7px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "#201e1d73", pointerEvents: "none" } }, "Поколение " + (ROMAN[d] || d + 1) + " · " + L.nodes.filter(n => n.depth === d).length + " человек"));
-    const edges = L.edges.map((e, i) => h("div", { key: "e" + i, style: e.type === "h" ? { position: "absolute", left: e.x + "px", top: e.y + "px", width: Math.max(1, e.len) + "px", height: "1px", background: "#201e1d66" } : { position: "absolute", left: e.x + "px", top: e.y + "px", width: "1px", height: Math.max(1, e.len) + "px", background: "#201e1d66" } }));
+    // Связи выбранного человека: путь вверх к родителям и отводы вниз к детям
+    // рисуются цветом и толще, остальное древо приглушается — иначе в архиве на
+    // полсотни карточек глазом не проследить, кто кому кто.
+    const edges = L.edges.map((e, i) => {
+      const on = s.sel && (e.ids || []).includes(s.sel);
+      const dim = s.sel && !on;
+      const color = on ? "var(--color-accent)" : "#201e1d66";
+      const thick = on ? 2 : 1;
+      const common = { position: "absolute", left: e.x + "px", top: e.y + "px", background: color, opacity: dim ? 0.25 : 1, zIndex: on ? 2 : 1, transition: "opacity .15s, background .15s" };
+      const size = e.type === "h"
+        ? { width: Math.max(1, e.len) + "px", height: thick + "px" }
+        : { width: thick + "px", height: Math.max(1, e.len) + "px" };
+      return h("div", { key: "e" + i, style: { ...common, ...size } });
+    });
+    // Ближайшая родня выбранного человека — отмечается рамкой, чтобы связь
+    // читалась не только по линиям, но и по самим карточкам.
+    const selected = s.sel ? (s.people || []).find(x => x.id === s.sel) : null;
+    const kin = new Set();
+    if (selected) {
+      [selected.fatherId, selected.motherId, ...(selected.spouseIds || [])].forEach(id => id && kin.add(id));
+      (s.people || []).forEach(x => { if (x.fatherId === selected.id || x.motherId === selected.id) kin.add(x.id); });
+    }
+
     const nodes = L.nodes.map((n) => {
       const p = n.p, vis = this.visible(p), on = hit(p), isSel = p.id === s.sel;
+      const isKin = kin.has(p.id);
       const ph = vis && (p.photos || []).find(x => x.src);
       const accent = "var(--color-accent-2)";
       // Полоса слева — достоверность сведений: в родословной это такая же часть
@@ -505,7 +535,7 @@ class App extends React.Component {
       const edge = isSel ? accent : (STATUS_COLOR[p.status] || STATUS_COLOR.unknown);
       return h("div", { key: p.id, style: { position: "absolute", left: n.x + "px", top: n.y + "px", width: n.w + "px", height: n.h + "px", opacity: on ? 1 : 0.22, transition: "opacity .2s" } },
         h("div", { onClick: () => this.setState({ sel: p.id, editing: false }), title: vis ? m.fio(p) : "Живущий человек — карточка скрыта",
-          style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(#f9f4ed,#eee7db)", border: "1px solid " + (isSel ? accent : "#201e1d4d"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + edge, cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px #7a8a5e38, 0 0 0 1px " + accent : "0 2px 6px #201e1d14, 2px 2px 0 #201e1d0d" } },
+          style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(#f9f4ed,#eee7db)", border: "1px solid " + (isSel ? accent : isKin ? "var(--color-accent)" : "#201e1d4d"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + edge, cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px #7a8a5e38, 0 0 0 1px " + accent : isKin ? "0 0 0 1px var(--color-accent)" : "0 2px 6px #201e1d14, 2px 2px 0 #201e1d0d" } },
           h("div", { style: { width: "58px", flex: "none", margin: "10px 11px 10px 10px", background: ph ? "#000" : (vis ? "linear-gradient(135deg,#eee7db,#dcd3c4)" : "#201e1d0d"), backgroundImage: ph ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "var(--radius-sm)", border: "1px solid #201e1d33", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "13px", color: "#201e1d73" } }, vis ? (ph ? "" : m.initials(p)) : "•"),
           h("div", { style: { flex: 1, minWidth: 0, padding: "11px 12px 10px 0", display: "flex", flexDirection: "column", justifyContent: "center" } },
             h("div", { style: { flex: "none", fontSize: "14.5px", fontWeight: 600, lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? (p.surname || "—") : "Скрыто"),
