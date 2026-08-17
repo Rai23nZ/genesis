@@ -233,13 +233,52 @@ export function mapPoints(people, { hideLiving = false } = {}) {
     (p.residences || []).forEach((r, i) => {
       const c = PLACES[r.place];
       if (!c) return;
-      pts.push({ person: p, place: r.place, lat: c[0], lon: c[1], from: r.from, to: r.to || (p.living ? 2026 : Number(p.death?.date?.slice(0, 4)) || r.from), note: r.note, order: i, gen: p.gen });
+      const now = new Date().getFullYear();
+      pts.push({ person: p, place: r.place, lat: c[0], lon: c[1], from: r.from, to: r.to || (p.living ? now : Number(p.death?.date?.slice(0, 4)) || r.from), note: r.note, order: i, gen: p.gen });
     });
   });
   return pts;
 }
 
 // ——— Импорт
+
+const GED_MONTHS = { JAN: 1, FEB: 2, MAR: 3, APR: 4, MAY: 5, JUN: 6, JUL: 7, AUG: 8, SEP: 9, OCT: 10, NOV: 11, DEC: 12 };
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// GEDCOM пишет даты десятком способов: "14 MAR 1902", "ABT 1902",
+// "BET 1900 AND 1910", "INT 1902 (со слов)". Клиент везде берёт из даты первые
+// четыре символа как год, поэтому приводим к ISO здесь — один раз, на входе.
+// Из диапазона берётся начало: в модели у события одна дата, а не период.
+export function normalizeDate(raw) {
+  const s = String(raw == null ? "" : raw).trim().toUpperCase();
+  if (!s) return "";
+  if (/^\d{4}(-\d{2}(-\d{2})?)?$/.test(s)) return s;
+  const range = s.match(/^(?:BET|FROM)\s+(.+?)\s+(?:AND|TO)\s+/);
+  const body = (range ? range[1] : s)
+    .replace(/^(?:ABT|EST|CAL|INT|BEF|AFT|FROM|TO)\s+/, "")
+    .replace(/\(.*\)$/, "")
+    .trim();
+  const m = body.match(/^(?:(\d{1,2})\s+)?(?:([A-Z]{3})\s+)?(\d{3,4})$/);
+  if (!m) return "";
+  const [, d, mon, y] = m;
+  const year = y.padStart(4, "0");
+  if (!mon || !GED_MONTHS[mon]) return year;
+  const month = pad2(GED_MONTHS[mon]);
+  return d ? `${year}-${month}-${pad2(Number(d))}` : `${year}-${month}`;
+}
+
+export const LIVING_MAX_AGE = 110;
+
+// От этого признака зависит, отдаст ли сервер карточку гостю, поэтому правило
+// осторожное: неизвестность трактуется в пользу скрытия. Модератор снимает
+// отметку вручную, увидев человека в отчёте импорта.
+export function guessLiving(birthDate, hasDeath, now = new Date()) {
+  if (hasDeath) return false;
+  const y = Number(String(birthDate || "").slice(0, 4));
+  if (!y) return true;
+  return now.getFullYear() - y < LIVING_MAX_AGE;
+}
+
 export function parseGedcom(text) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const recs = []; let cur = null, ctx = null;
@@ -258,10 +297,13 @@ export function parseGedcom(text) {
     (r.FAMC || []).forEach(fid => { const f = fams.find(x => x.id === fid); if (f) { if (f.HUSB) parents.push(f.HUSB); if (f.WIFE) parents.push(f.WIFE); } });
     const spouse = [];
     (r.FAMS || []).forEach(fid => { const f = fams.find(x => x.id === fid); if (f) { [f.HUSB, f.WIFE].forEach(s => { if (s && s !== r.id) spouse.push(s); }); } });
+    const hasDeath = !!r.events.DEAT;
+    const birth = r.events.BIRT ? { date: normalizeDate(r.events.BIRT.DATE), place: r.events.BIRT.PLAC } : undefined;
     return P(r.id, {
       name: r.name, sex: r.sex, parents, spouse,
-      birth: r.events.BIRT ? { date: r.events.BIRT.DATE, place: r.events.BIRT.PLAC } : undefined,
-      death: r.events.DEAT ? { date: r.events.DEAT.DATE, place: r.events.DEAT.PLAC } : undefined,
+      birth,
+      death: hasDeath ? { date: normalizeDate(r.events.DEAT.DATE), place: r.events.DEAT.PLAC } : undefined,
+      living: guessLiving(birth?.date, hasDeath),
       residences: r.events.RESI?.PLAC ? [{ place: r.events.RESI.PLAC }] : []
     });
   });
@@ -272,7 +314,10 @@ export function parseGedcom(text) {
 
 export function parseJson(text) {
   const d = JSON.parse(text);
-  const people = Array.isArray(d) ? d : (d.people || []);
+  const raw = Array.isArray(d) ? d : (d.people || []);
+  // Файл со стороны может не иметь признака «живущий». Достраиваем его по тому же
+  // правилу, что и для GEDCOM: без него гость увидел бы всех.
+  const people = raw.map(p => p.living === undefined ? { ...p, living: guessLiving(p.birth?.date, !!p.death) } : p);
   return { people, families: 0, title: d.title || "", subtitle: d.subtitle || "" };
 }
 
@@ -281,6 +326,9 @@ export function exportBackup(people, moderation, meta = {}) {
     format: "family-tree-backup", version: 1, exported: new Date().toISOString(),
     title: meta.title || "", subtitle: meta.subtitle || "",
     counts: { people: people.length, pending: moderation.length },
+    // Координаты мест входят в копию: без них восстановленный архив открывается
+    // с пустой картой.
+    places: meta.places || PLACES,
     people, moderation
   }, null, 2);
 }

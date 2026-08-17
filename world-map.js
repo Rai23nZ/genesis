@@ -2,7 +2,9 @@
 // Зум колесом, панорама перетаскиванием, приближение к городу по клику.
 // Тема задаётся атрибутами: paper, ink, accent, muted, land, font, radius.
 (function () {
-  const TOPO = "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json";
+  // Топология лежит рядом с приложением: её кладёт server/host/vendor.sh.
+  // Обращений к сторонним CDN на странице архива нет.
+  const TOPO = "./vendor/countries-110m.json";
 
   // Имена людей, названия мест и подписи приходят из импорта и правок родственников.
   // Всё, что попадает в innerHTML, экранируется — иначе запись вида <img onerror=…>
