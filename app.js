@@ -31,7 +31,7 @@ class App extends React.Component {
     super(props);
     this.state = {
       people: null, pending: [], sel: null, q: "", role: "Гость", zoom: 0.82, modOpen: false, mapOpen: false,
-      editing: false, draft: {}, form: null, toast: null, title: CFG.fallbackTitle || "Семейное древо", verified: {},
+      editing: false, draft: {}, form: null, panning: false, toast: null, title: CFG.fallbackTitle || "Семейное древо", verified: {},
       demo: !HAS_API, authOpen: false, authRole: null, authLogin: "", authSecret: "", authErr: "", authBusy: false,
       scanOpen: false, scanRows: [], printOpen: false, printScale: 0.72, printLand: true,
       mapMode: "all", mapRoute: ""
@@ -56,7 +56,8 @@ class App extends React.Component {
           people: d.people.slice(),
           pending: d.moderation.slice(),
           title: d.title || this.state.title,
-          sel: d.people[0] ? d.people[0].id : null,
+          // Карточка при загрузке не открывается: сначала древо целиком.
+          sel: null,
           demo: d.source !== "api",
           // Роль восстанавливается из сессии: cookie переживает перезагрузку,
           // и вводить пароль заново незачем.
@@ -73,6 +74,36 @@ class App extends React.Component {
   componentWillUnmount() { document.removeEventListener("person-open", this._onPerson); }
 
   flash(t) { clearTimeout(this._t); this.setState({ toast: t }); this._t = setTimeout(() => this.setState({ toast: null }), 3200); }
+
+  // ——— Перетаскивание полотна мышью, как на карте. Полосы прокрутки остаются,
+  // но по большому древу удобнее возить рукой.
+  startPan(e) {
+    if (e.button !== 0) return;
+    const box = e.currentTarget;
+    const from = { x: e.clientX, y: e.clientY, left: box.scrollLeft, top: box.scrollTop };
+    this._panned = false;
+
+    const move = (ev) => {
+      const dx = ev.clientX - from.x, dy = ev.clientY - from.y;
+      // Мелкое дрожание рукой не должно отменять выбор карточки.
+      if (!this._panned && Math.abs(dx) + Math.abs(dy) < 5) return;
+      this._panned = true;
+      this.setState((st) => (st.panning ? null : { panning: true }));
+      box.scrollLeft = from.left - dx;
+      box.scrollTop = from.top - dy;
+      ev.preventDefault();
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      this.setState({ panning: false });
+      // Флаг снимается после всплытия click, иначе конец перетаскивания
+      // открывал бы карточку, над которой отпустили кнопку.
+      setTimeout(() => { this._panned = false; }, 0);
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  }
   visible(p) { return !(this.state.role === "Гость" && p.living); }
 
   askRole(role) {
@@ -502,20 +533,33 @@ class App extends React.Component {
       .concat((p.residences || []).map(r => r.place)).filter(Boolean).join(" ").toLowerCase().includes(q);
     const depths = [...new Set(L.nodes.map(n => n.depth))].sort((a, b) => a - b);
     const bands = depths.map(d => h("div", { key: "band" + d, style: { position: "absolute", left: 0, top: (d * (122 + 92) - 30) + "px", width: L.width + "px", borderTop: "1px dashed #201e1d26", paddingTop: "7px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "#201e1d73", pointerEvents: "none" } }, "Поколение " + (ROMAN[d] || d + 1) + " · " + L.nodes.filter(n => n.depth === d).length + " человек"));
-    // Связи выбранного человека: путь вверх к родителям и отводы вниз к детям
-    // рисуются цветом и толще, остальное древо приглушается — иначе в архиве на
-    // полсотни карточек глазом не проследить, кто кому кто.
-    const edges = L.edges.map((e, i) => {
+    // Связи рисуются одним слоем SVG, а не набором тонких блоков. Полотно
+    // масштабируется CSS-преобразованием, и линия толщиной в один пиксель при
+    // масштабе 0,82 округлялась до нуля — часть связей просто исчезала и
+    // проявлялась лишь при выделении, когда линия становилась толще.
+    //
+    // Связи выбранного человека — путь вверх к родителям и отводы вниз к детям —
+    // рисуются цветом и толще, остальное древо приглушается: в архиве на полсотни
+    // карточек иначе не проследить, кто кому кто.
+    const edgeLayer = h("svg", {
+      width: L.width, height: L.height,
+      style: { position: "absolute", left: 0, top: 0, overflow: "visible", pointerEvents: "none" }
+    }, L.edges.map((e, i) => {
       const on = s.sel && (e.ids || []).includes(s.sel);
       const dim = s.sel && !on;
-      const color = on ? "var(--color-accent)" : "#201e1d66";
-      const thick = on ? 2 : 1;
-      const common = { position: "absolute", left: e.x + "px", top: e.y + "px", background: color, opacity: dim ? 0.25 : 1, zIndex: on ? 2 : 1, transition: "opacity .15s, background .15s" };
-      const size = e.type === "h"
-        ? { width: Math.max(1, e.len) + "px", height: thick + "px" }
-        : { width: thick + "px", height: Math.max(1, e.len) + "px" };
-      return h("div", { key: "e" + i, style: { ...common, ...size } });
-    });
+      const len = Math.max(1, e.len);
+      return h("line", {
+        key: "e" + i,
+        x1: e.x, y1: e.y,
+        x2: e.type === "h" ? e.x + len : e.x,
+        y2: e.type === "h" ? e.y : e.y + len,
+        stroke: on ? "var(--color-accent)" : "#201e1d8c",
+        strokeWidth: on ? 2.6 : 1.4,
+        strokeDasharray: e.spouse ? "5 4" : null,
+        strokeLinecap: "square",
+        opacity: dim ? 0.28 : 1
+      });
+    }));
     // Ближайшая родня выбранного человека — отмечается рамкой, чтобы связь
     // читалась не только по линиям, но и по самим карточкам.
     const selected = s.sel ? (s.people || []).find(x => x.id === s.sel) : null;
@@ -534,7 +578,7 @@ class App extends React.Component {
       // карточки, как имя, иначе гипотеза выглядит как установленный факт.
       const edge = isSel ? accent : (STATUS_COLOR[p.status] || STATUS_COLOR.unknown);
       return h("div", { key: p.id, style: { position: "absolute", left: n.x + "px", top: n.y + "px", width: n.w + "px", height: n.h + "px", opacity: on ? 1 : 0.22, transition: "opacity .2s" } },
-        h("div", { onClick: () => this.setState({ sel: p.id, editing: false }), title: vis ? m.fio(p) : "Живущий человек — карточка скрыта",
+        h("div", { onClick: () => { if (this._panned) return; this.setState({ sel: p.id, editing: false }); }, title: vis ? m.fio(p) : "Живущий человек — карточка скрыта",
           style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(#f9f4ed,#eee7db)", border: "1px solid " + (isSel ? accent : isKin ? "var(--color-accent)" : "#201e1d4d"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + edge, cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px #7a8a5e38, 0 0 0 1px " + accent : isKin ? "0 0 0 1px var(--color-accent)" : "0 2px 6px #201e1d14, 2px 2px 0 #201e1d0d" } },
           h("div", { style: { width: "58px", flex: "none", margin: "10px 11px 10px 10px", background: ph ? "#000" : (vis ? "linear-gradient(135deg,#eee7db,#dcd3c4)" : "#201e1d0d"), backgroundImage: ph ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "var(--radius-sm)", border: "1px solid #201e1d33", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "13px", color: "#201e1d73" } }, vis ? (ph ? "" : m.initials(p)) : "•"),
           h("div", { style: { flex: 1, minWidth: 0, padding: "11px 12px 10px 0", display: "flex", flexDirection: "column", justifyContent: "center" } },
@@ -545,9 +589,12 @@ class App extends React.Component {
           h("div", { style: { position: "absolute", right: "8px", top: "8px", width: "7px", height: "7px", borderRadius: "50%", background: p.living ? "var(--color-accent-2)" : "transparent" } })));
     });
     return h("div", { style: { flex: 1, position: "relative", overflow: "hidden" } },
-      h("div", { style: { position: "absolute", inset: 0, overflow: "auto", background: "radial-gradient(120% 90% at 30% 0%,#f9f4ed,var(--color-surface) 70%,#dcd3c4)" } },
+      h("div", { "data-scroll": "", onMouseDown: (e) => this.startPan(e),
+        style: { position: "absolute", inset: 0, overflow: "auto", cursor: s.panning ? "grabbing" : "grab", background: "radial-gradient(120% 90% at 30% 0%,#f9f4ed,var(--color-surface) 70%,#dcd3c4)" } },
         h("div", { style: { position: "absolute", inset: 0, backgroundImage: BACKDROP(1200, 900), backgroundRepeat: "no-repeat", backgroundPosition: "center bottom", backgroundSize: "min(90%, 1100px) auto", pointerEvents: "none" } }),
-        h("div", { "data-canvas": "", style: { position: "relative", transform: "scale(" + s.zoom + ")", transformOrigin: "0 0", padding: "60px 80px", width: "max-content" } }, bands, edges, nodes)),
+        h("div", { "data-canvas": "", style: { position: "relative", transform: "scale(" + s.zoom + ")", transformOrigin: "0 0", // Справа оставляется место под боковую карточку, иначе в крайнем левом
+          // положении она перекрывает часть древа и до неё не домотать.
+          padding: "60px " + (s.sel ? 540 : 80) + "px 60px 80px", width: "max-content" } }, bands, edgeLayer, nodes)),
       h("div", { style: { position: "absolute", left: "18px", bottom: "18px", display: "flex", border: "1px solid #201e1d26", background: "var(--color-bg)" } },
         h("button", { onClick: () => this.setState({ zoom: Math.max(0.35, s.zoom - 0.12) }), style: { width: "32px", height: "30px", border: "none", borderRight: "1px solid #201e1d1a", background: "transparent", fontSize: "16px", cursor: "pointer", color: "var(--color-text)" } }, "−"),
         h("div", { style: { width: "52px", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "11px", color: "#201e1da6" } }, Math.round(s.zoom * 100) + "%"),

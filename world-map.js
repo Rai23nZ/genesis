@@ -79,7 +79,15 @@
         }
         this.draw();
         this.controls();
-        new ResizeObserver(() => { this._tf = null; this.k = 1; this.draw(); }).observe(this);
+        // Перерисовка при изменении размера сохраняет положение и масштаб:
+        // панель карты появляется с анимацией, наблюдатель срабатывал уже после
+        // того, как пользователь выбрал место, и возвращал вид в исходный —
+        // именно это выглядело как «карта съезжает обратно».
+        let resizeTimer = null;
+        new ResizeObserver(() => {
+          clearTimeout(resizeTimer);
+          resizeTimer = setTimeout(() => this.draw(), 120);
+        }).observe(this);
       } catch (e) {
         const s = this.$("[data-status]"); if (s) s.textContent = "Не удалось загрузить карту";
         console.error(e);
@@ -134,7 +142,7 @@
       const d3 = window.d3, [x, y] = this._proj([lon, lat]);
       const w = this.clientWidth, h = this.clientHeight;
       this._svg.transition().duration(600).call(this._zoom.transform,
-        d3.zoomIdentity.translate(w / 2 - 60 + 130, h / 2).scale(k).translate(-x, -y));
+        d3.zoomIdentity.translate(w / 2, h / 2).scale(k).translate(-x, -y));
     }
 
     openPerson(person, place) {
@@ -166,13 +174,18 @@
 
       const pts = this.activePoints();
       const fc = { type: "FeatureCollection", features: (pts.length ? pts : this.points).map(p => ({ type: "Feature", geometry: { type: "Point", coordinates: [p.lon, p.lat] } })) };
-      const proj = d3.geoMercator().fitExtent([[Math.min(300, w * 0.32), 70], [w - 60, h - 70]], fc);
-      if (proj.scale() > 900) proj.scale(900).translate([w / 2 + 60, h / 2]);
+      // Карта вписывается во всё поле с небольшими полями. Прежде она
+      // втискивалась в рамку со сдвигом 300 px под панель, а затем ещё и
+      // принудительно переносилась в центр — отсюда обрезанный вид.
+      const pad = 40;
+      const proj = d3.geoMercator().fitExtent([[pad, pad], [Math.max(pad + 1, w - pad), Math.max(pad + 1, h - pad)]], fc);
       const path = d3.geoPath(proj);
       this._proj = proj;
 
       const zoom = d3.zoom().scaleExtent([1, 60])
-        .translateExtent([[-w * 0.4, -h * 0.4], [w * 1.4, h * 1.4]])
+        // Свободный сдвиг: прежние рамки в 40% экрана не давали поднять карту
+        // выше её исходного положения.
+        .translateExtent([[-w * 3, -h * 3], [w * 4, h * 4]])
         .on("zoom", (ev) => { this.k = ev.transform.k; this._tf = ev.transform; g.attr("transform", ev.transform); this.rescale(); this.updateHint(); });
       this._zoom = zoom;
       svg.call(zoom).on("dblclick.zoom", null)
