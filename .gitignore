@@ -1,0 +1,30 @@
+# Секреты и локальные настройки
+.env
+.env.*
+config.local.js
+*.pem
+*.key
+
+# Данные архива: реальные записи, фотографии и база не хранятся в репозитории
+data/archive.json
+data/*.local.json
+uploads/
+backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Локальные зависимости и сборки
+node_modules/
+vendor/
+dist/
+
+# Служебные файлы окружения и вспомогательных инструментов
+.claude/
+CLAUDE.md
+.DS_Store
+Thumbs.db
+*.log
+.idea/
+.vscode/

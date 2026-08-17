@@ -4,15 +4,17 @@ const h = React.createElement;
 
 const GEN = ["#56633f", "#8c491a", "#645c50", "#728157", "#b2622d"];
 const ROMAN = ["I", "II", "III", "IV", "V", "VI"];
-const CREDS = { "Родственник": { login: "maria@family.ru", secret: "4821" }, "Модератор": { login: "hranitel@semya.ru", secret: "semya-2026" } };
+const CFG = window.FT_CONFIG || {};
+// Учётных данных в клиенте нет и быть не должно: роль подтверждает только сервер.
+const HAS_API = !!String(CFG.apiBase || "").trim();
 
 class App extends React.Component {
   constructor(props) {
     super(props);
     this.state = {
-      people: null, pending: [], sel: "p1", q: "", role: "Гость", zoom: 0.82, modOpen: false, mapOpen: false,
-      editing: false, draft: {}, toast: null, title: "Ковалёвы · Ланские", verified: {},
-      authOpen: false, authRole: null, authLogin: "", authSecret: "", authErr: "",
+      people: null, pending: [], sel: null, q: "", role: "Гость", zoom: 0.82, modOpen: false, mapOpen: false,
+      editing: false, draft: {}, toast: null, title: CFG.fallbackTitle || "Семейное древо", verified: {},
+      demo: !HAS_API, authOpen: false, authRole: null, authLogin: "", authSecret: "", authErr: "", authBusy: false,
       scanOpen: false, scanRows: [], printOpen: false, printScale: 0.72, printLand: true,
       mapMode: "all", mapRoute: ""
     };
@@ -28,9 +30,22 @@ class App extends React.Component {
     document.addEventListener("person-open", this._onPerson);
     import("./family-data.js").then((m) => {
       this.m = m;
-      let title = this.state.title;
-      try { title = localStorage.getItem("ft-archive-title") || title; } catch (e) {}
-      this.setState({ people: m.PEOPLE.slice(), pending: m.MODERATION.slice(), title });
+      // Данные всегда берутся из источника (API сервера, иначе — демонстрационный
+      // набор). Ничего не восстанавливается из localStorage: кеш браузера не
+      // является хранилищем архива.
+      return m.whenReady().then((d) => {
+        this.setState({
+          people: d.people.slice(),
+          pending: d.moderation.slice(),
+          title: d.title || this.state.title,
+          sel: d.people[0] ? d.people[0].id : null,
+          demo: d.source !== "api"
+        });
+        if (d.source !== "api") this.flash("Демонстрационный режим: сервер не подключён, изменения не сохраняются");
+      });
+    }).catch((err) => {
+      this.setState({ people: [], pending: [] });
+      this.flash("Не удалось загрузить архив: " + err.message);
     });
   }
 
@@ -41,18 +56,42 @@ class App extends React.Component {
 
   askRole(role) {
     if (this.state.verified[role]) return this.setState({ role, editing: false });
+    if (!HAS_API) {
+      // Без сервера роль повысить нельзя: проверять пароль в браузере бессмысленно.
+      return this.flash("Вход недоступен: сервер не подключён (apiBase в config.js)");
+    }
     this.setState({ authOpen: true, authRole: role, authLogin: "", authSecret: "", authErr: "" });
   }
 
   authSubmit() {
-    const s = this.state, c = CREDS[s.authRole];
-    const login = (s.authLogin || "").trim().toLowerCase();
+    const s = this.state;
+    const login = (s.authLogin || "").trim();
     if (!login) return this.setState({ authErr: "Укажите e-mail из приглашения" });
-    if (login !== c.login || (s.authSecret || "").trim() !== c.secret) {
-      return this.setState({ authErr: s.authRole === "Модератор" ? "Неверный e-mail или пароль" : "Код не подходит к этому приглашению" });
-    }
-    this.setState({ role: s.authRole, verified: { ...s.verified, [s.authRole]: true }, authOpen: false, authErr: "", authSecret: "" });
-    this.flash("Вход выполнен: " + s.authRole.toLowerCase() + " · " + login);
+    if (!(s.authSecret || "").trim()) return this.setState({ authErr: "Укажите код или пароль" });
+    this.setState({ authBusy: true, authErr: "" });
+    // Проверку выполняет сервер: клиент видит только «да/нет» и выданную им роль.
+    this.m.apiLogin(s.authRole, login, s.authSecret).then((res) => {
+      const role = res.role || s.authRole;
+      this.setState({
+        role, verified: { ...s.verified, [role]: true },
+        authOpen: false, authErr: "", authLogin: "", authSecret: "", authBusy: false
+      });
+      this.flash("Вход выполнен: " + role.toLowerCase());
+      return this.reload();
+    }).catch((err) => {
+      this.setState({ authBusy: false, authSecret: "", authErr: /HTTP 401|HTTP 403/.test(err.message) ? "Неверный e-mail, код или срок доступа истёк" : "Сервер недоступен: " + err.message });
+    });
+  }
+
+  // Перечитать архив с сервера — после входа, правки или решения модератора.
+  reload() {
+    if (!this.m) return Promise.resolve();
+    return this.m.loadArchive().then((d) => {
+      this.setState({
+        people: d.people.slice(), pending: d.moderation.slice(),
+        title: d.title || this.state.title, demo: d.source !== "api"
+      });
+    }).catch((err) => this.flash("Не удалось обновить данные: " + err.message));
   }
 
   submitEdit() {
@@ -68,6 +107,14 @@ class App extends React.Component {
     }
     if (!changes.length) { this.setState({ editing: false }); return this.flash("Изменений нет"); }
     const rec = { id: "u" + Date.now(), author: "Вы", role: s.role.toLowerCase(), date: new Date().toISOString(), target: p.id, targetName: p.name, kind: photos.length && changes.length <= photos.length + 1 ? "photo" : "edit", summary: "Правка из карточки", changes, patch: { fields, photos } };
+    if (HAS_API) {
+      // Решение о том, публиковать сразу или отправить в очередь, принимает сервер
+      // по роли сессии — клиент только передаёт правку.
+      this.setState({ editing: false, draft: {} });
+      return this.m.apiSubmitEdit(p.id, { fields, changes, photos: photos.map(x => ({ caption: x.caption })) })
+        .then((res) => { this.flash(res.queued ? "Отправлено модератору" : "Сохранено"); return this.reload(); })
+        .catch((err) => this.flash("Не удалось отправить правку: " + err.message));
+    }
     if (s.role === "Модератор") {
       const people = s.people.map(x => x.id === p.id ? { ...x, ...fields, photos: [...(x.photos || []), ...photos] } : x);
       this.setState({ people, editing: false, draft: {} });
@@ -78,15 +125,27 @@ class App extends React.Component {
   }
 
   approve(x) {
+    if (HAS_API) return this.moderate(x, "approve", "Принято: изменения опубликованы");
     const st = this.state;
     let people = st.people;
     if (x.patch && people) {
       people = people.map(p => p.id === x.target ? { ...p, ...(x.patch.fields || {}), photos: [...(p.photos || []), ...(x.patch.photos || [])] } : p);
     }
     this.setState({ people, pending: st.pending.filter(y => y.id !== x.id) });
-    this.flash("Принято: изменения опубликованы на лендинге");
+    this.flash("Принято (демонстрационный режим: на сервере ничего не изменилось)");
   }
-  reject(x) { this.setState({ pending: this.state.pending.filter(y => y.id !== x.id) }); this.flash("Отклонено: автор получит уведомление"); }
+
+  reject(x) {
+    if (HAS_API) return this.moderate(x, "reject", "Отклонено: автор получит уведомление");
+    this.setState({ pending: this.state.pending.filter(y => y.id !== x.id) });
+    this.flash("Отклонено (демонстрационный режим)");
+  }
+
+  moderate(x, action, okText) {
+    return this.m.apiModerate(x.id, action)
+      .then(() => { this.flash(okText); return this.reload(); })
+      .catch((err) => this.flash("Не удалось выполнить: " + err.message));
+  }
 
   onDraftPhotos(e) {
     const files = [...(e.target.files || [])].filter(f => /^image\//.test(f.type)).slice(0, 12);
@@ -147,7 +206,7 @@ class App extends React.Component {
         const res = /\.ged/i.test(f.name) ? this.m.parseGedcom(txt) : this.m.parseJson(txt);
         if (!res.people.length) return this.flash("В файле не найдено записей о людях");
         const patch = { people: res.people, sel: res.people[0].id };
-        if (res.title) { patch.title = res.title; try { localStorage.setItem("ft-archive-title", res.title); } catch (err) {} }
+        if (res.title) patch.title = res.title;
         this.setState(patch);
         this.flash("Импорт " + f.name + ": " + res.people.length + " человек" + (res.families ? ", " + res.families + " семей" : "") + (res.title ? " · название из файла" : " · название в файле не указано, поправьте в шапке"));
       } catch (err) { this.flash("Не удалось разобрать файл: " + err.message); }
@@ -250,7 +309,7 @@ class App extends React.Component {
         h("div", { style: { width: "38px", height: "38px", flex: "none", background: "var(--color-text)", color: "var(--color-bg)", display: "grid", placeItems: "center", fontSize: "19px", fontWeight: 600 } }, (s.title || "А").trim()[0].toUpperCase()),
         h("div", { style: { minWidth: 0 } },
           this.kicker("Семейный архив"),
-          h("input", { value: s.title, onChange: (e) => { const v = e.target.value; try { localStorage.setItem("ft-archive-title", v); } catch (err) {} this.setState({ title: v }); }, disabled: s.role !== "Модератор",
+          h("input", { value: s.title, onChange: (e) => this.setState({ title: e.target.value }), disabled: s.role !== "Модератор",
             title: s.role === "Модератор" ? "Название можно править здесь; также подтягивается из импорта (JSON: title, GEDCOM: 1 FILE)" : "Название меняет только модератор",
             style: { display: "block", width: "100%", border: "none", borderBottom: "1px " + (s.role === "Модератор" ? "dashed #201e1d59" : "solid transparent"), background: "transparent", font: "inherit", fontSize: "19px", fontWeight: 600, marginTop: "2px", padding: "1px 0", color: "var(--color-text)", outline: "none" } }))),
       h("div", { style: { flex: 1, minWidth: "70px", display: "flex", alignItems: "center", gap: "10px", padding: "0 16px", borderRight: "1px solid #201e1d26" } },
@@ -258,7 +317,9 @@ class App extends React.Component {
         h("input", { value: s.q, onChange: (e) => this.setState({ q: e.target.value }), placeholder: "фамилия, город, профессия",
           style: { flex: 1, minWidth: "60px", border: "none", borderBottom: "1px solid #201e1d40", background: "transparent", font: "inherit", fontSize: "14px", padding: "5px 2px", outline: "none", color: "var(--color-text)" } })),
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "0 14px", flex: "none", borderRight: "1px solid #201e1d26" } },
-        h("div", { style: { display: "flex", border: "1px solid #201e1d26", flex: "none" } }, ["Гость", "Родственник", "Модератор"].map(roleBtn))),
+        h("div", { style: { display: "flex", border: "1px solid #201e1d26", flex: "none" } }, ["Гость", "Родственник", "Модератор"].map(roleBtn)),
+        s.demo ? h("span", { title: "Сервер не подключён: данные читаются из data/sample.json, изменения никуда не сохраняются",
+          style: { fontFamily: "var(--font-body)", fontSize: "10.5px", letterSpacing: ".08em", textTransform: "uppercase", color: "var(--color-accent)", border: "1px solid var(--color-accent)", padding: "2px 7px", flex: "none" } }, "демо") : null),
       h("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "0 18px", flex: "none" } },
         h("button", { onClick: () => this.setState({ modOpen: true }), className: "btn btn-primary", style: { position: "relative" } },
           "Модерация", s.pending.length ? h("span", { style: { marginLeft: "8px", background: "var(--color-accent)", color: "#fff", fontFamily: "var(--font-body)", fontSize: "10.5px", padding: "1px 6px" } }, s.pending.length) : null),
@@ -442,14 +503,14 @@ class App extends React.Component {
             ? "Модераторов заводит владелец архива вручную: e-mail плюс пароль от 10 символов. Сессия живёт 30 дней, потом вход заново."
             : "Родственник получает персональную ссылку-приглашение на свой e-mail и четырёхзначный код из того же письма. Ссылка действует 14 дней; все правки идут в очередь модерации и подписаны его именем."),
           h("label", { style: { display: "block", fontSize: "11.5px", color: "#201e1d99", marginBottom: "4px" } }, isMod ? "E-mail хранителя" : "E-mail из приглашения"),
-          h("input", { value: s.authLogin, onChange: (e) => this.setState({ authLogin: e.target.value }), placeholder: isMod ? "hranitel@semya.ru" : "maria@family.ru", style: { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "8px 10px", marginBottom: "12px", color: "var(--color-text)" } }),
+          h("input", { value: s.authLogin, onChange: (e) => this.setState({ authLogin: e.target.value }), placeholder: "name@example.org", style: { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "8px 10px", marginBottom: "12px", color: "var(--color-text)" } }),
           h("label", { style: { display: "block", fontSize: "11.5px", color: "#201e1d99", marginBottom: "4px" } }, isMod ? "Пароль" : "Код из письма"),
           h("input", { value: s.authSecret, onChange: (e) => this.setState({ authSecret: e.target.value }), type: "password", placeholder: isMod ? "минимум 10 символов" : "4 цифры", style: { width: "100%", boxSizing: "border-box", border: "1px solid #201e1d33", background: "#fff", font: "inherit", fontSize: "14px", padding: "8px 10px", color: "var(--color-text)" } }),
           s.authErr ? h("div", { style: { fontSize: "12.5px", color: "var(--color-accent)", marginTop: "10px" } }, s.authErr) : null,
           h("div", { style: { display: "flex", gap: "8px", marginTop: "18px", alignItems: "center" } },
-            h("button", { onClick: () => this.authSubmit(), className: "btn btn-primary" }, "Войти"),
+            h("button", { onClick: () => this.authSubmit(), className: "btn btn-primary", disabled: s.authBusy }, "Войти"),
             h("button", { onClick: () => this.setState({ authOpen: false, authErr: "", authLogin: "", authSecret: "" }), className: "btn btn-secondary" }, "Отмена"),
-            h("span", { style: { fontFamily: "var(--font-body)", fontSize: "10.5px", color: "#201e1d8c", marginLeft: "auto" } }, isMod ? "демо: hranitel@semya.ru / semya-2026" : "демо: maria@family.ru / 4821")))));
+            h("span", { style: { fontFamily: "var(--font-body)", fontSize: "10.5px", color: "#201e1d8c", marginLeft: "auto" } }, s.authBusy ? "проверяем…" : "проверяет сервер")))));
   }
 
   renderScanDialog() {

@@ -4,6 +4,13 @@
 (function () {
   const TOPO = "https://cdn.jsdelivr.net/npm/world-atlas@2.0.2/countries-110m.json";
 
+  // Имена людей, названия мест и подписи приходят из импорта и правок родственников.
+  // Всё, что попадает в innerHTML, экранируется — иначе запись вида <img onerror=…>
+  // в имени выполнит произвольный скрипт в браузере каждого, кто откроет карту.
+  const esc = (v) => String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
   class FamilyMap extends HTMLElement {
     static get observedAttributes() { return ["data-route", "data-mode"]; }
 
@@ -58,6 +65,7 @@
       try {
         await waitFor(() => window.d3 && window.topojson);
         const data = await import("./family-data.js");
+        await data.whenReady();
         this.data = data;
         this.people = data.PEOPLE;
         this.points = data.mapPoints(this.people);
@@ -92,7 +100,7 @@
         <div data-routebox style="display:${this.mode === "route" ? "block" : "none"};margin-bottom:14px">
           ${label("Чей маршрут")}
           <select data-route style="width:100%;padding:6px;font:inherit;font-size:11.5px;border:1px solid ${t.ink}22;border-radius:${t.radius};background:transparent;color:${t.ink}">
-            ${people.map(p => `<option value="${p.id}" ${p.id === this.routeId ? "selected" : ""}>${d.shortName(p)} · ${d.years(p)}</option>`).join("")}
+            ${people.map(p => `<option value="${esc(p.id)}" ${p.id === this.routeId ? "selected" : ""}>${esc(d.shortName(p))} · ${esc(d.years(p))}</option>`).join("")}
           </select>
         </div>
         ${label("Поколение")}
@@ -104,7 +112,7 @@
         ${label("Приблизить к городу")}
         <select data-city style="width:100%;padding:6px;font:inherit;font-size:11.5px;border:1px solid ${t.ink}22;border-radius:${t.radius};background:transparent;color:${t.ink}">
           <option value="">— выберите город —</option>
-          ${[...new Set(this.points.map(p => p.place))].sort().map(c => `<option value="${c}">${c}</option>`).join("")}
+          ${[...new Set(this.points.map(p => p.place))].sort().map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join("")}
         </select>`;
 
       this.$("[data-modes]").onclick = (e) => { const b = e.target.closest("[data-m]"); if (!b) return; this.mode = b.dataset.m; this.controls(); this.draw(); };
@@ -208,7 +216,7 @@
           const [x, y] = proj([s.c[1], s.c[0]]);
           const mk = marker(x, y).style("cursor", "pointer")
             .on("click", () => this.zoomTo(s.c[1], s.c[0], 8))
-            .on("mousemove", (ev) => show(`<b>${s.place}</b> · остановка ${i + 1}<br>${s.from}${s.to ? "–" + s.to : " → наст. время"}${s.note ? "<br><i style='opacity:.75'>" + s.note + "</i>" : ""}`, ev))
+            .on("mousemove", (ev) => show(`<b>${esc(s.place)}</b> · остановка ${i + 1}<br>${esc(s.from)}${s.to ? "–" + esc(s.to) : " → наст. время"}${s.note ? "<br><i style='opacity:.75'>" + esc(s.note) + "</i>" : ""}`, ev))
             .on("mouseleave", hide);
           const dy = i % 2 ? 21 : -13;
           mk.append("line").attr("x1", 0).attr("y1", 0).attr("x2", 0).attr("y2", dy * 0.6).attr("stroke", t.accent).attr("stroke-opacity", .4);
@@ -222,7 +230,7 @@
             .attr("width", bb.width + 8).attr("height", bb.height + 4).attr("fill", t.paper).attr("fill-opacity", .88)
             .style("pointer-events", "none");
         });
-        this.legend(`<b style="color:${t.ink}">${p.name}</b><br>${stops.length} мест · ${stops[0]?.from}–${stops[stops.length - 1]?.to || "наст. время"}<br><span style="opacity:.8">клик по остановке — приблизить, двойной клик по карте — зум, перетаскивание — сдвиг</span>`);
+        this.legend(`<b style="color:${t.ink}">${esc(p.name)}</b><br>${stops.length} мест · ${esc(stops[0]?.from)}–${esc(stops[stops.length - 1]?.to || "наст. время")}<br><span style="opacity:.8">клик по остановке — приблизить, двойной клик по карте — зум, перетаскивание — сдвиг</span>`);
         if (this._tf) svg.call(zoom.transform, this._tf); else this.rescale();
         return;
       }
@@ -235,7 +243,7 @@
           const c = d.PLACES[a.place], [x, y] = proj([c[1], c[0]]);
           const mk = marker(x, y).style("cursor", "pointer")
             .on("click", () => this.zoomTo(c[1], c[0], 8))
-            .on("mousemove", (ev) => show(`<b>${a.place}</b> · ${a.people} человек<br>${[...new Set(a.list.map(l => l.person.name))].join("<br>")}<br><i style="opacity:.7">клик — приблизить</i>`, ev))
+            .on("mousemove", (ev) => show(`<b>${esc(a.place)}</b> · ${a.people} человек<br>${[...new Set(a.list.map(l => esc(l.person.name)))].join("<br>")}<br><i style="opacity:.7">клик — приблизить</i>`, ev))
             .on("mouseleave", hide);
           const r = rs(a.people);
           mk.append("circle").attr("r", r).attr("fill", t.accent).attr("fill-opacity", 0.2)
@@ -262,7 +270,7 @@
             .attr("fill", p.person.living ? t.accent : t.ink).attr("fill-opacity", p.person.living ? 0.92 : 0.6)
             .attr("stroke", t.paper).attr("stroke-width", 1)
             .style("cursor", "pointer")
-            .on("mousemove", (ev) => show(`<b>${p.person.name}</b><br>${place} · ${p.from}${p.to && p.to !== p.from ? "–" + p.to : ""}${p.note ? "<br><i style='opacity:.75'>" + p.note + "</i>" : ""}<br><i style="opacity:.7">клик — открыть карточку, двойной — приблизить</i>`, ev))
+            .on("mousemove", (ev) => show(`<b>${esc(p.person.name)}</b><br>${esc(place)} · ${esc(p.from)}${p.to && p.to !== p.from ? "–" + esc(p.to) : ""}${p.note ? "<br><i style='opacity:.75'>" + esc(p.note) + "</i>" : ""}<br><i style="opacity:.7">клик — открыть карточку, двойной — приблизить</i>`, ev))
             .on("mouseleave", hide)
             .on("mousedown", (ev) => { this._down = [ev.clientX, ev.clientY, Date.now()]; })
             .on("mouseup", (ev) => {

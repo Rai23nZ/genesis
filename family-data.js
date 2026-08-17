@@ -1,281 +1,93 @@
-// Общая модель данных, импорт/экспорт и раскладки древа.
-// Никакой вёрстки — только бизнес-логика, которую переиспользуют все три варианта.
+// Модель данных, загрузка/синхронизация, импорт-экспорт и раскладки древа.
+// Только логика: в этом файле нет ни одной записи о людях — они приходят с сервера.
 
-export const PLACES = {
-  "Тула": [54.19, 37.62], "Смоленск": [54.78, 32.05], "Москва": [55.75, 37.62],
-  "Ленинград": [59.94, 30.31], "Санкт-Петербург": [59.94, 30.31], "Свердловск": [56.84, 60.61],
-  "Екатеринбург": [56.84, 60.61], "Новосибирск": [55.03, 82.92], "Ташкент": [41.31, 69.24],
-  "Алма-Ата": [43.24, 76.89], "Калининград": [54.71, 20.51], "Владивосток": [43.12, 131.89],
-  "Берлин": [52.52, 13.40], "Прага": [50.09, 14.42], "Хайфа": [32.79, 34.99],
-  "Торонто": [43.65, -79.38], "Белград": [44.79, 20.45], "Мурманск": [68.97, 33.08],
-  "Сочи": [43.60, 39.73], "Тбилиси": [41.72, 44.79], "Рига": [56.95, 24.11],
-  "Мюнхен": [48.14, 11.58], "Воронеж": [51.66, 39.20], "Ржев": [56.26, 34.33],
-  "Караганда": [49.80, 73.10], "Нижний Новгород": [56.33, 44.00], "Лиссабон": [38.72, -9.14]
-};
+// Источник истины — сервер. Пока API не поднят, приложение читает демонстрационный
+// набор data/sample.json (синтетические записи, персональных данных не содержит).
+// Ни здесь, ни в любом другом файле репозитория не должно появляться реальных
+// имён, адресов, паролей и кодов доступа — им место в базе на сервере.
+
+// Живые коллекции. Модуль ES — синглтон, поэтому app.js и world-map.js видят
+// один и тот же массив после того, как loadArchive() его наполнил.
+export const PLACES = {};
+export const PEOPLE = [];
+export const MODERATION = [];
+
+export const meta = { title: "", source: "", loadedAt: null, readOnly: true };
+
+const cfg = () => (typeof window !== "undefined" && window.FT_CONFIG) || {};
+const apiBase = () => String(cfg().apiBase || "").replace(/\/+$/, "");
+
+const fill = (arr, next) => { arr.length = 0; (next || []).forEach(x => arr.push(x)); return arr; };
 
 const P = (id, o) => Object.assign({ id, photos: [], residences: [], documents: [], sources: [], notes: "" }, o);
+export { P as person };
 
-export const PEOPLE = [
-  P("p1", {
-    name: "Пётр Алексеевич Ковалёв", sex: "m", gen: 0, birth: { date: "1902-03-14", place: "Тула" }, death: { date: "1978-11-02", place: "Тула" },
-    occupation: "Мастер инструментального цеха", employer: "Тульский оружейный завод",
-    education: "Ремесленное училище при ТОЗ, 1919",
-    military: "Трудовой фронт, 1941–1945. Медаль «За доблестный труд в Великой Отечественной войне»",
-    residences: [{ place: "Тула", from: 1902, to: 1978, note: "ул. Металлистов, дом заводской постройки" }],
-    photos: [{ caption: "Портрет, 1936", year: 1936 }, { caption: "У проходной завода, 1947", year: 1947 }, { caption: "С внуками, 1961", year: 1961 }],
-    documents: ["Трудовая книжка, 1919–1962", "Свидетельство о браке, 1926"],
-    sources: ["Архив ТОЗ, ф. 12 оп. 3", "Семейный альбом, коробка №1"],
-    notes: "Всю жизнь проработал на одном заводе. Собирал стенные часы, три из них до сих пор в семье.",
-    spouse: ["p2"], parents: []
-  }),
-  P("p2", {
-    name: "Анна Михайловна Ковалёва", maiden: "Соколова", sex: "f", gen: 0, birth: { date: "1907-08-21", place: "Тула" }, death: { date: "1989-04-17", place: "Тула" },
-    occupation: "Фельдшер", employer: "Городская больница №2",
-    education: "Тульское медицинское училище, 1927",
-    residences: [{ place: "Тула", from: 1907, to: 1989 }],
-    photos: [{ caption: "Выпуск медучилища, 1927", year: 1927 }, { caption: "Портрет, 1950-е", year: 1955 }],
-    sources: ["Метрическая книга Успенской церкви, 1907"],
-    notes: "Вела домашнюю книгу расходов с 1930 по 1988 год — 58 тетрадей сохранились.",
-    spouse: ["p1"], parents: []
-  }),
-  P("p3", {
-    name: "Григорий Иванович Ланской", sex: "m", gen: 0, birth: { date: "1899-01-09", place: "Смоленск" }, death: { date: "1943-03-05", place: "Ржев" },
-    occupation: "Землемер", employer: "Смоленский губернский земотдел",
-    education: "Смоленское реальное училище",
-    military: "Стрелковая дивизия, старший сержант. Погиб под Ржевом, март 1943",
-    residences: [{ place: "Смоленск", from: 1899, to: 1941 }, { place: "Ржев", from: 1942, to: 1943, note: "фронт" }],
-    photos: [{ caption: "Единственная сохранившаяся карточка, 1938", year: 1938 }],
-    documents: ["Извещение о гибели, 1943", "Красноармейская книжка (копия)"],
-    sources: ["ОБД «Мемориал», запись 51203877"],
-    notes: "Место захоронения точно не установлено. Поиск продолжается.",
-    spouse: ["p4"], parents: []
-  }),
-  P("p4", {
-    name: "Евдокия Павловна Ланская", maiden: "Титова", sex: "f", gen: 0, birth: { date: "1905-06-30", place: "Смоленск" }, death: { date: "1982-12-11", place: "Москва" },
-    occupation: "Учитель начальных классов", employer: "Школа №9, Смоленск",
-    education: "Педагогический техникум, 1924",
-    residences: [{ place: "Смоленск", from: 1905, to: 1941 }, { place: "Ташкент", from: 1941, to: 1945, note: "эвакуация с детьми" }, { place: "Смоленск", from: 1945, to: 1968 }, { place: "Москва", from: 1968, to: 1982 }],
-    photos: [{ caption: "С классом, 1936", year: 1936 }, { caption: "Ташкент, 1943", year: 1943 }],
-    notes: "Вывезла двоих детей в эвакуацию в Ташкент летом 1941 года. Дорога заняла 26 дней.",
-    spouse: ["p3"], parents: []
-  }),
+async function getJson(url, init) {
+  const res = await fetch(url, Object.assign({ credentials: "include", headers: { "Accept": "application/json" } }, init));
+  if (!res.ok) throw new Error(url + " → HTTP " + res.status);
+  return res.json();
+}
 
-  P("p5", {
-    name: "Николай Петрович Ковалёв", sex: "m", gen: 1, birth: { date: "1928-05-02", place: "Тула" }, death: { date: "2001-09-30", place: "Москва" },
-    occupation: "Инженер-конструктор", employer: "НИИ приборостроения, Москва",
-    education: "МВТУ им. Баумана, 1953",
-    military: "Срочная служба, Северный флот, 1948–1951, Мурманск",
-    residences: [{ place: "Тула", from: 1928, to: 1946 }, { place: "Мурманск", from: 1948, to: 1951, note: "служба" }, { place: "Москва", from: 1951, to: 2001 }],
-    photos: [{ caption: "Северный флот, 1949", year: 1949 }, { caption: "Защита диплома, 1953", year: 1953 }, { caption: "Семья на даче, 1972", year: 1972 }, { caption: "Портрет, 1990", year: 1990 }],
-    documents: ["Диплом МВТУ №412330", "Авторское свидетельство на изобретение, 1968"],
-    notes: "Четыре авторских свидетельства. Домашний архив чертежей передан внуку в 1999 году.",
-    spouse: ["p9"], parents: ["p1", "p2"]
-  }),
-  P("p6", {
-    name: "Вера Петровна Штейн", maiden: "Ковалёва", sex: "f", gen: 1, birth: { date: "1931-11-19", place: "Тула" }, death: { date: "2016-02-08", place: "Хайфа" },
-    occupation: "Библиограф", employer: "Областная библиотека, Тула",
-    education: "Московский библиотечный институт, 1954",
-    residences: [{ place: "Тула", from: 1931, to: 1955 }, { place: "Ленинград", from: 1955, to: 1991 }, { place: "Хайфа", from: 1991, to: 2016 }],
-    photos: [{ caption: "Ленинград, 1958", year: 1958 }, { caption: "Хайфа, 1994", year: 1994 }],
-    notes: "Составила первую опись семейного архива в 1987 году — 340 карточек. Опись оцифрована.",
-    spouse: ["p10"], parents: ["p1", "p2"]
-  }),
-  P("p7", {
-    name: "Михаил Петрович Ковалёв", sex: "m", gen: 1, birth: { date: "1935-07-07", place: "Тула" }, death: { date: "1994-06-21", place: "Новосибирск" },
-    occupation: "Геолог", employer: "Западно-Сибирское геологическое управление",
-    education: "Свердловский горный институт, 1959",
-    residences: [{ place: "Тула", from: 1935, to: 1954 }, { place: "Свердловск", from: 1954, to: 1959 }, { place: "Новосибирск", from: 1959, to: 1994 }],
-    photos: [{ caption: "Экспедиция, Алтай, 1963", year: 1963 }],
-    notes: "Полевые дневники 1960–1988 годов хранятся у сына.",
-    spouse: ["p11"], parents: ["p1", "p2"]
-  }),
-  P("p8", {
-    name: "Тамара Григорьевна Ковалёва", maiden: "Ланская", sex: "f", gen: 1, birth: { date: "1930-04-25", place: "Смоленск" }, death: { date: "2012-01-14", place: "Москва" },
-    occupation: "Врач-терапевт", employer: "Поликлиника №22, Москва",
-    education: "1-й Московский медицинский институт, 1955",
-    residences: [{ place: "Смоленск", from: 1930, to: 1941 }, { place: "Ташкент", from: 1941, to: 1945, note: "эвакуация" }, { place: "Смоленск", from: 1945, to: 1949 }, { place: "Москва", from: 1949, to: 2012 }],
-    photos: [{ caption: "Ташкент, 1944", year: 1944 }, { caption: "Свадьба, 1954", year: 1954 }, { caption: "На приёме, 1970", year: 1970 }],
-    notes: "Записала воспоминания об эвакуации в 1998 году. Рукопись 46 страниц, оцифрована.",
-    spouse: ["p5"], parents: ["p3", "p4"]
-  }),
-  P("p9", { name: "Тамара Григорьевна Ковалёва", alias: true, hidden: true, gen: 1, parents: [] }),
-  P("p10", {
-    name: "Аркадий Львович Штейн", sex: "m", gen: 1, birth: { date: "1929-02-16", place: "Ленинград" }, death: { date: "2003-05-09", place: "Хайфа" },
-    occupation: "Скрипач, оркестрант", employer: "Ленинградская филармония",
-    education: "Ленинградская консерватория, 1953",
-    residences: [{ place: "Ленинград", from: 1929, to: 1991 }, { place: "Хайфа", from: 1991, to: 2003 }],
-    photos: [{ caption: "Оркестр, 1961", year: 1961 }],
-    spouse: ["p6"], parents: []
-  }),
-  P("p11", {
-    name: "Галина Сергеевна Ковалёва", maiden: "Ерёмина", sex: "f", gen: 1, birth: { date: "1938-09-03", place: "Свердловск" },
-    occupation: "Химик-лаборант", employer: "Институт катализа, Новосибирск",
-    education: "Уральский политехнический институт, 1961",
-    residences: [{ place: "Свердловск", from: 1938, to: 1961 }, { place: "Новосибирск", from: 1961 }],
-    living: true, spouse: ["p7"], parents: []
-  }),
-  P("p12", {
-    name: "Борис Григорьевич Ланской", sex: "m", gen: 1, birth: { date: "1937-10-12", place: "Смоленск" }, death: { date: "2009-08-03", place: "Калининград" },
-    occupation: "Капитан дальнего плавания", employer: "Балтийское морское пароходство",
-    education: "Ленинградское высшее инженерное морское училище, 1960",
-    residences: [{ place: "Смоленск", from: 1937, to: 1941 }, { place: "Ташкент", from: 1941, to: 1945 }, { place: "Ленинград", from: 1955, to: 1962 }, { place: "Калининград", from: 1962, to: 2009 }],
-    photos: [{ caption: "На мостике, 1974", year: 1974 }, { caption: "Порт Лиссабона, 1981", year: 1981 }],
-    notes: "Судовые журналы и открытки из 31 порта. Часть коллекции — в семейном архиве.",
-    spouse: ["p13"], parents: ["p3", "p4"]
-  }),
-  P("p13", {
-    name: "Зинаида Фёдоровна Ланская", maiden: "Чуб", sex: "f", gen: 1, birth: { date: "1941-03-08", place: "Воронеж" },
-    occupation: "Портниха, ателье", education: "Профтехучилище, Калининград, 1959",
-    residences: [{ place: "Воронеж", from: 1941, to: 1958 }, { place: "Калининград", from: 1958 }],
-    living: true, spouse: ["p12"], parents: []
-  }),
-
-  P("p14", {
-    name: "Сергей Николаевич Ковалёв", sex: "m", gen: 2, birth: { date: "1955-01-22", place: "Москва" },
-    occupation: "Архитектор", employer: "Проектное бюро «Контур»",
-    education: "МАрхИ, 1978",
-    residences: [{ place: "Москва", from: 1955, to: 1994 }, { place: "Прага", from: 1994, to: 2006 }, { place: "Москва", from: 2006 }],
-    photos: [{ caption: "Диплом МАрхИ, 1978", year: 1978 }, { caption: "Прага, 1997", year: 1997 }],
-    notes: "Ведёт семейный архив с 2012 года. Оцифровал 1 200 фотографий.",
-    living: true, spouse: ["p15"], parents: ["p5", "p8"]
-  }),
-  P("p15", {
-    name: "Наталья Ивановна Ковалёва", maiden: "Гущина", sex: "f", gen: 2, birth: { date: "1958-06-11", place: "Нижний Новгород" },
-    occupation: "Переводчик", education: "Горьковский иняз, 1980",
-    residences: [{ place: "Нижний Новгород", from: 1958, to: 1980 }, { place: "Москва", from: 1980, to: 1994 }, { place: "Прага", from: 1994, to: 2006 }, { place: "Москва", from: 2006 }],
-    living: true, spouse: ["p14"], parents: []
-  }),
-  P("p16", {
-    name: "Ольга Николаевна Дорн", maiden: "Ковалёва", sex: "f", gen: 2, birth: { date: "1958-09-14", place: "Москва" },
-    occupation: "Детский невролог", employer: "Клиника при университете, Мюнхен",
-    education: "2-й Московский медицинский институт, 1982",
-    residences: [{ place: "Москва", from: 1958, to: 1990 }, { place: "Берлин", from: 1990, to: 1999 }, { place: "Мюнхен", from: 1999 }],
-    living: true, spouse: ["p17"], parents: ["p5", "p8"]
-  }),
-  P("p17", {
-    name: "Пауль Дорн", sex: "m", gen: 2, birth: { date: "1956-04-02", place: "Берлин" },
-    occupation: "Инженер-акустик", education: "TU Berlin, 1981",
-    residences: [{ place: "Берлин", from: 1956, to: 1999 }, { place: "Мюнхен", from: 1999 }],
-    living: true, spouse: ["p16"], parents: []
-  }),
-  P("p18", {
-    name: "Ирина Николаевна Ковалёва", sex: "f", gen: 2, birth: { date: "1962-12-01", place: "Москва" },
-    occupation: "Редактор", employer: "Издательство «Слово»",
-    education: "МГУ, филологический факультет, 1985",
-    residences: [{ place: "Москва", from: 1962 }],
-    living: true, parents: ["p5", "p8"]
-  }),
-  P("p19", {
-    name: "Лев Аркадьевич Штейн", sex: "m", gen: 2, birth: { date: "1959-03-27", place: "Ленинград" },
-    occupation: "Программист", employer: "Elbit, Хайфа",
-    education: "ЛЭТИ, 1982",
-    residences: [{ place: "Ленинград", from: 1959, to: 1991 }, { place: "Хайфа", from: 1991 }],
-    living: true, parents: ["p6", "p10"]
-  }),
-  P("p20", {
-    name: "Марина Аркадьевна Штейн", sex: "f", gen: 2, birth: { date: "1963-07-19", place: "Ленинград" },
-    occupation: "Реставратор", employer: "Русский музей",
-    education: "Академия художеств, 1988",
-    residences: [{ place: "Ленинград", from: 1963 }, { place: "Санкт-Петербург", from: 1991 }],
-    living: true, parents: ["p6", "p10"]
-  }),
-  P("p21", {
-    name: "Дмитрий Михайлович Ковалёв", sex: "m", gen: 2, birth: { date: "1966-02-05", place: "Новосибирск" },
-    occupation: "Геофизик", employer: "Институт нефтегазовой геологии",
-    education: "НГУ, 1989",
-    residences: [{ place: "Новосибирск", from: 1966 }],
-    living: true, spouse: ["p22"], parents: ["p7", "p11"]
-  }),
-  P("p22", {
-    name: "Елена Ким", sex: "f", gen: 2, birth: { date: "1969-05-30", place: "Алма-Ата" },
-    occupation: "Экономист", education: "КазГУ, 1991",
-    residences: [{ place: "Алма-Ата", from: 1969, to: 1992 }, { place: "Новосибирск", from: 1992 }],
-    living: true, spouse: ["p21"], parents: []
-  }),
-  P("p23", {
-    name: "Виктор Борисович Ланской", sex: "m", gen: 2, birth: { date: "1961-08-08", place: "Калининград" },
-    occupation: "Судовой механик", employer: "Балтийский флот, гражданский состав",
-    education: "Калининградское мореходное училище, 1983",
-    residences: [{ place: "Калининград", from: 1961 }],
-    living: true, parents: ["p12", "p13"]
-  }),
-
-  P("p24", {
-    name: "Алексей Сергеевич Ковалёв", sex: "m", gen: 3, birth: { date: "1982-10-04", place: "Москва" },
-    occupation: "Продуктовый дизайнер", employer: "Независимая практика",
-    education: "Высшая школа экономики, 2005",
-    residences: [{ place: "Москва", from: 1982, to: 1994 }, { place: "Прага", from: 1994, to: 2000 }, { place: "Москва", from: 2000, to: 2019 }, { place: "Тбилиси", from: 2019 }],
-    living: true, spouse: ["p25"], parents: ["p14", "p15"],
-    notes: "Инициатор оцифровки архива и этого древа."
-  }),
-  P("p25", {
-    name: "Юлия Ковалёва", maiden: "Раева", sex: "f", gen: 3, birth: { date: "1985-01-15", place: "Рига" },
-    occupation: "Педиатр", residences: [{ place: "Рига", from: 1985, to: 2007 }, { place: "Москва", from: 2007, to: 2019 }, { place: "Тбилиси", from: 2019 }],
-    living: true, spouse: ["p24"], parents: []
-  }),
-  P("p26", {
-    name: "Мария Сергеевна Ковалёва", sex: "f", gen: 3, birth: { date: "1986-03-23", place: "Прага" },
-    occupation: "Скрипачка", employer: "Камерный оркестр, Белград",
-    education: "Пражская консерватория, 2009",
-    residences: [{ place: "Прага", from: 1986, to: 2009 }, { place: "Белград", from: 2009 }],
-    living: true, parents: ["p14", "p15"]
-  }),
-  P("p27", {
-    name: "Кирилл Дорн", sex: "m", gen: 3, birth: { date: "1984-11-11", place: "Москва" },
-    occupation: "Врач-хирург", employer: "Клиника Мюнхенского университета",
-    residences: [{ place: "Москва", from: 1984, to: 1990 }, { place: "Берлин", from: 1990, to: 2003 }, { place: "Мюнхен", from: 2003 }],
-    living: true, parents: ["p16", "p17"]
-  }),
-  P("p28", {
-    name: "Антон Дмитриевич Ковалёв", sex: "m", gen: 3, birth: { date: "1992-04-18", place: "Новосибирск" },
-    occupation: "Инженер данных", employer: "Yandex", residences: [{ place: "Новосибирск", from: 1992, to: 2014 }, { place: "Торонто", from: 2014 }],
-    living: true, parents: ["p21", "p22"]
-  }),
-  P("p29", { name: "Софья Ковалёва", sex: "f", gen: 4, birth: { date: "2011-07-02", place: "Москва" }, residences: [{ place: "Москва", from: 2011, to: 2019 }, { place: "Тбилиси", from: 2019 }], living: true, minor: true, parents: ["p24", "p25"] }),
-  P("p30", { name: "Тимур Ковалёв", sex: "m", gen: 4, birth: { date: "2015-12-19", place: "Москва" }, residences: [{ place: "Москва", from: 2015, to: 2019 }, { place: "Тбилиси", from: 2019 }], living: true, minor: true, parents: ["p24", "p25"] }),
-  P("p31", { name: "Лиза Ковалёва", sex: "f", gen: 4, birth: { date: "2014-05-06", place: "Белград" }, residences: [{ place: "Белград", from: 2014 }], living: true, minor: true, parents: ["p26"] })
-].filter(p => !p.hidden);
-
-// p5 женат на p8 — поправляем ссылку (p9 был техническим дублем)
-PEOPLE.find(p => p.id === "p5").spouse = ["p8"];
-
-export const MODERATION = [
-  {
-    id: "m1", author: "Марина Штейн", role: "родственник", date: "2026-08-11T09:12:00", target: "p6", targetName: "Вера Петровна Штейн",
-    kind: "edit", summary: "Уточнены даты жизни и место работы",
-    changes: [
-      { field: "Дата смерти", before: "1996-02-08", after: "2016-02-08" },
-      { field: "Место работы", before: "Библиотека", after: "Областная библиотека, Тула" },
-      { field: "Заметки", before: "—", after: "Составила первую опись семейного архива в 1987 году — 340 карточек." }
-    ]
-  },
-  {
-    id: "m2", author: "Антон Ковалёв", role: "родственник", date: "2026-08-10T20:41:00", target: "p7", targetName: "Михаил Петрович Ковалёв",
-    kind: "photo", summary: "Добавлено 3 фотографии в галерею",
-    changes: [
-      { field: "Галерея", before: "1 фото", after: "4 фото" },
-      { field: "Подпись", before: "—", after: "Экспедиция на Алтае, 1963. Слева — М. П. Ковалёв" }
-    ]
-  },
-  {
-    id: "m3", author: "Кирилл Дорн", role: "родственник", date: "2026-08-09T14:05:00", target: null, targetName: "Ханна Дорн (новый человек)",
-    kind: "new", summary: "Новый человек: мать Пауля Дорна",
-    changes: [
-      { field: "ФИО", before: "—", after: "Ханна Дорн (Вебер)" },
-      { field: "Годы жизни", before: "—", after: "1928–2011" },
-      { field: "Родство", before: "—", after: "Мать Пауля Дорна" },
-      { field: "Места проживания", before: "—", after: "Берлин (1928–2011)" }
-    ]
-  },
-  {
-    id: "m4", author: "Виктор Ланской", role: "родственник", date: "2026-08-08T11:30:00", target: "p3", targetName: "Григорий Иванович Ланской",
-    kind: "edit", summary: "Исправлено место гибели по данным ОБД «Мемориал»",
-    changes: [
-      { field: "Место смерти", before: "Смоленск", after: "Ржев" },
-      { field: "Источники", before: "—", after: "ОБД «Мемориал», запись 51203877" }
-    ]
+// Единственная точка входа для данных. Порядок: API сервера → локальный образец.
+// Ничего не кэшируется в localStorage: перезагрузка страницы всегда идёт к источнику.
+export async function loadArchive() {
+  const base = apiBase();
+  if (base) {
+    const d = await getJson(base + "/api/archive");
+    return apply(d, "api");
   }
-];
+  const d = await getJson("./data/sample.json");
+  return apply(d, "sample");
+}
+
+function apply(d, source) {
+  fill(PEOPLE, d.people);
+  fill(MODERATION, d.moderation);
+  Object.keys(PLACES).forEach(k => delete PLACES[k]);
+  Object.assign(PLACES, d.places || {});
+  meta.title = d.title || "";
+  meta.source = source;
+  meta.loadedAt = new Date().toISOString();
+  meta.readOnly = source !== "api";
+  return { people: PEOPLE, moderation: MODERATION, places: PLACES, title: meta.title, source };
+}
+
+let _ready = null;
+// Ждать готовности данных из любого модуля (карта вызывает это перед отрисовкой).
+export function whenReady() { return (_ready = _ready || loadArchive()); }
+
+// ——— Запись. Без сервера возвращает отказ: молча писать «в никуда» приложение не должно.
+export async function apiSubmitEdit(personId, patch) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/people/" + encodeURIComponent(personId) + "/edit",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+}
+
+export async function apiModerate(recordId, action) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/moderation/" + encodeURIComponent(recordId) + "/" + action, { method: "POST" });
+}
+
+export async function apiLogin(role, login, secret) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/auth/login",
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ role, login, secret }) });
+}
+
+export async function apiLogout() {
+  const base = apiBase();
+  if (!base) return null;
+  return getJson(base + "/api/auth/logout", { method: "POST" });
+}
+
+// ——— Экранирование пользовательского текста перед вставкой в HTML-строку.
+// Имена и подписи приходят из импорта и правок родственников — доверять им нельзя.
+export const escapeHtml = (v) => String(v == null ? "" : v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
 export const byId = (people) => Object.fromEntries(people.map(p => [p.id, p]));
 
