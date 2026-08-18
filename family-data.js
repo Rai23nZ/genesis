@@ -38,16 +38,30 @@ export const STATUS = {
   hypothesis: { label: "Гипотеза", full: "Гипотеза, требует проверки" }
 };
 
+// Устойчивый идентификатор снимка. React в галерее раньше опирался на номер
+// в массиве: удалили второй снимок из пяти — и подписи оставшихся съезжали на
+// одну позицию вместе с курсором в поле ввода. Идентификатор выдаётся один раз
+// при загрузке и живёт вместе со снимком.
+let _photoSeq = 0;
+export const photoUid = () => "ph" + (++_photoSeq) + "-" + Math.random().toString(36).slice(2, 8);
+
 const P = (id, o) => Object.assign({ id }, BLANK, o, {
   spouseIds: (o && o.spouseIds) || [],
   residences: (o && o.residences) || [],
-  photos: (o && o.photos) || []
+  photos: ((o && o.photos) || []).map(ph => (ph && ph.uid) ? ph : Object.assign({}, ph, { uid: photoUid() }))
 });
 export { P as person };
 
 async function getJson(url, init) {
   const res = await fetch(url, Object.assign({ credentials: "include", headers: { "Accept": "application/json" } }, init));
-  if (!res.ok) throw new Error(url + " → HTTP " + res.status);
+  if (!res.ok) {
+    // Код ответа кладётся в саму ошибку: без него вызывающий не отличит
+    // «нет прав» от «карточку успели изменить», и обоим случаям досталось бы
+    // одно невнятное сообщение с номером HTTP.
+    const err = new Error(url + " → HTTP " + res.status);
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 
@@ -422,6 +436,169 @@ export function layout(people, opts = {}) {
   return { nodes, edges, rows, warnings, width, height };
 }
 
+// ——— Река времени ——————————————————————————————————————————————————
+//
+// Древо отвечает «кто чей», круг — «чего мы не знаем», река — «когда они жили
+// и что застали». Человек здесь не узел, а отрезок жизни на общей оси лет,
+// поэтому сразу видно, кто кого застал и чья молодость пришлась на войну.
+
+// Год с признаком точности. «ок. 1898», «до 1965» и «1900—1910» — обычные для
+// семейного архива записи, и превращать их в точку значило бы соврать: в реке
+// такие концы отрисованы размытыми.
+export function yearMark(raw) {
+  const s = String(raw == null ? "" : raw).trim();
+  if (!s) return null;
+  const all = s.match(/1[5-9]\d{2}|20\d{2}/g);
+  if (!all) return null;
+  const a = Number(all[0]);
+  if (all[1]) { const b = Number(all[1]); return { y: (a + b) / 2, lo: a, hi: b, sure: false }; }
+  if (/ок\.|около|прибл|\?/i.test(s)) return { y: a, lo: a - 6, hi: a + 6, sure: false };
+  if (/^до\s/i.test(s)) return { y: a, lo: a - 9, hi: a, sure: false };
+  if (/^после\s/i.test(s)) return { y: a, lo: a, hi: a + 9, sure: false };
+  return { y: a, lo: a, hi: a, sure: true };
+}
+
+const GEN_STEP = 26;      // средняя разница поколений, для вывода недостающих дат
+const LIFE_SPAN = 70;     // столько же — для отсутствующей даты смерти
+
+// Отрезок жизни. Если дат нет вовсе, он выводится из родни и помечается
+// inferred: в архиве таких записей половина, и выбрасывать их из реки нельзя,
+// но и рисовать наравне с задокументированными — обман.
+export function lifeSpan(p, idx, kidsOf, now = new Date().getFullYear()) {
+  const b = yearMark(p.birthDate), d = yearMark(p.deathDate);
+  if (b || d) {
+    const birth = b || { y: d.y - LIFE_SPAN, lo: d.y - LIFE_SPAN - 8, hi: d.y - LIFE_SPAN + 8, sure: false };
+    const death = d || (p.living
+      ? { y: now, lo: now, hi: now, sure: true, open: true }
+      : { y: birth.y + LIFE_SPAN, lo: birth.y + LIFE_SPAN - 10, hi: birth.y + LIFE_SPAN + 10, sure: false });
+    return { birth, death, inferred: false, sure: !!(b && b.sure && d && d.sure), living: !!p.living };
+  }
+  const kids = (kidsOf[p.id] || []).map(k => yearMark(idx[k] && idx[k].birthDate)).filter(Boolean);
+  const mates = (p.spouseIds || []).map(id => yearMark(idx[id] && idx[id].birthDate)).filter(Boolean);
+  const parents = [p.fatherId, p.motherId].map(id => yearMark(idx[id] && idx[id].birthDate)).filter(Boolean);
+  let by = null;
+  if (kids.length) by = Math.min.apply(null, kids.map(k => k.y)) - GEN_STEP;
+  else if (mates.length) by = mates[0].y;
+  else if (parents.length) by = Math.max.apply(null, parents.map(k => k.y)) + GEN_STEP;
+  if (by === null) return null;
+  return {
+    birth: { y: by, lo: by - 10, hi: by + 10, sure: false },
+    death: { y: by + LIFE_SPAN, lo: by + LIFE_SPAN - 12, hi: by + LIFE_SPAN + 12, sure: false },
+    inferred: true, sure: false, living: !!p.living
+  };
+}
+
+// Корень фамилии, чтобы Ветров и Ветрова попали в один род.
+export function clanKey(p) {
+  const sn = String(p.surname || "").trim();
+  if (!sn) return "—";
+  return sn.replace(/(ая|ва|на|ина|ова|ева|а)$/u, (m) => (m === "а" ? "" : m.slice(0, -1)));
+}
+
+// Строки реки: род за родом, внутри — по году рождения.
+export function riverRows(people, { hideLiving = false } = {}) {
+  const list = people.filter(p => !(hideLiving && p.living));
+  const idx = byId(list);
+  const kidsOf = {};
+  list.forEach(p => [p.fatherId, p.motherId].forEach(id => {
+    if (id && idx[id]) (kidsOf[id] = kidsOf[id] || []).push(p.id);
+  }));
+
+  const placed = [];
+  list.forEach(p => {
+    const s = lifeSpan(p, idx, kidsOf);
+    if (s) placed.push({ p, s });
+  });
+  if (!placed.length) return { clans: [], min: 1900, max: 2000, total: 0, dated: 0, inferred: 0 };
+
+  const groups = {};
+  placed.forEach(x => {
+    const k = clanKey(x.p);
+    (groups[k] = groups[k] || []).push(x);
+  });
+  const clans = Object.keys(groups)
+    .map(k => ({ key: k, members: groups[k].sort((a, b) => a.s.birth.y - b.s.birth.y) }))
+    .sort((a, b) => a.members[0].s.birth.y - b.members[0].s.birth.y);
+
+  const lo = Math.min.apply(null, placed.map(x => x.s.birth.lo));
+  const hi = Math.max.apply(null, placed.map(x => x.s.death.hi));
+  return {
+    clans,
+    min: Math.floor(lo / 10) * 10 - 10,
+    max: Math.ceil(hi / 10) * 10 + 10,
+    total: placed.length,
+    dated: placed.filter(x => !x.s.inferred).length,
+    inferred: placed.filter(x => x.s.inferred).length
+  };
+}
+
+// Эпохи накладываются на реку полосами: для рода, живущего с 1890-х, история
+// проходит прямо сквозь семью, и это видно без единой подписи.
+export const ERAS = [
+  { a: 1914, b: 1918, t: "Первая мировая" },
+  { a: 1941, b: 1945, t: "Великая Отечественная" }
+];
+export const ERA_MARKS = [{ y: 1917, t: "1917" }, { y: 1991, t: "1991" }];
+
+// ——— Кольца предков ————————————————————————————————————————————————
+//
+// Веерная раскладка прямых предков: кольцо — поколение, место в кольце —
+// определённый предок. Слоты считаются всегда, даже когда предка нет: пустое
+// место здесь и есть содержание. Древо показывает, что известно; круг
+// показывает, чего не хватает, — а в архиве, где 19 записей из 22 записаны
+// со слов родных, второй вопрос важнее первого.
+//
+// Порядок слотов — как в нумерации Соса-Страдоница: у человека с индексом i
+// отец лежит в 2i, мать в 2i+1. Поэтому место предка не съезжает оттого, что
+// соседняя ветвь оборвалась, и круг можно сравнивать с кругом.
+export function ancestorRings(people, rootId, rings = 3) {
+  const idx = byId(people);
+  const root = idx[rootId];
+  if (!root) return null;
+
+  const levels = [];
+  let level = [rootId];
+  for (let d = 0; d < rings; d++) {
+    const next = [];
+    level.forEach(id => {
+      const p = id ? idx[id] : null;
+      next.push(p && p.fatherId && idx[p.fatherId] ? p.fatherId : null);
+      next.push(p && p.motherId && idx[p.motherId] ? p.motherId : null);
+    });
+    levels.push(next);
+    level = next;
+  }
+
+  let total = 0, known = 0;
+  levels.forEach(l => l.forEach(id => { total++; if (id) known++; }));
+  return { root, levels, total, known, gaps: total - known };
+}
+
+// Насколько полно заполнена карточка: 0 — одно имя, 1 — известно всё.
+// В круге это ложится плотностью заливки, поэтому «мы про него ничего не
+// знаем» видно, даже когда сам предок найден.
+export function richness(p) {
+  if (!p) return 0;
+  const has = [
+    p.birthDate, p.deathDate, p.birthPlace, p.bio, p.sources,
+    (p.residences || []).length, (p.photos || []).length
+  ];
+  const n = has.filter(Boolean).length;
+  return Math.min(1, n / 5);
+}
+
+// Кого показать в круге, если человек ещё не выбран: того, у кого известно
+// больше всего предков. С пустого корня круг выглядит сломанным, хотя это
+// просто неудачно выбранная точка отсчёта.
+export function deepestRoot(people, rings = 3) {
+  let best = null, bestKnown = -1;
+  people.forEach(p => {
+    const r = ancestorRings(people, p.id, rings);
+    if (r && r.known > bestKnown) { bestKnown = r.known; best = p.id; }
+  });
+  return best;
+}
+
 // ——— Точки на карте. Координаты берутся из справочника мест: в GEDCOM и в
 // выгрузках их нет, там только названия.
 export function mapPoints(people, { hideLiving = false } = {}) {
@@ -474,26 +651,45 @@ function parseGedName(raw) {
 
 export function parseGedcom(text) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const recs = []; let cur = null, ctx = null;
+  const recs = []; let cur = null, ctx = null, sink = null;
   for (const line of lines) {
     const m = line.match(/^(\d+)\s+(@[^@]+@\s+)?(\w+)\s*(.*)$/);
     if (!m) continue;
     const [, lvl, ptr, tag, val] = m;
-    if (lvl === "0") { cur = { id: ptr ? ptr.trim().replace(/@/g, "") : null, tag, name: "", events: {} }; recs.push(cur); ctx = null; continue; }
+    if (lvl === "0") { cur = { id: ptr ? ptr.trim().replace(/@/g, "") : null, tag, name: "", events: {} }; recs.push(cur); ctx = null; sink = null; continue; }
     if (!cur) continue;
+
+    // CONT и CONC — продолжение предыдущего значения, а не отдельные поля.
+    // Без них многострочное примечание обрезалось до первой строки, а оно
+    // уходит в карточку биографией: текст терялся молча, прямо при импорте.
+    // CONT начинает новую строку, CONC дописывает вплотную.
+    if (tag === "CONT" || tag === "CONC") {
+      // Значение берётся из самой строки, а не из разбора: общее выражение
+      // съедает пробелы после тега, а для CONC ведущий пробел значим — без
+      // него соседние слова слипаются.
+      const raw = line.replace(/^\d+\s+(?:@[^@]+@\s+)?\w+ ?/, "");
+      if (sink) sink.obj[sink.key] = String(sink.obj[sink.key] || "") + (tag === "CONT" ? "\n" : "") + raw;
+      continue;
+    }
+
     if (lvl === "1") {
       ctx = tag;
-      if (tag === "FILE" || tag === "_TITL" || tag === "TITL") cur.title = val.trim();
-      if (tag === "NAME") cur.name = val.trim();
+      sink = null;
+      if (tag === "FILE" || tag === "_TITL" || tag === "TITL") { cur.title = val.trim(); sink = { obj: cur, key: "title" }; }
+      if (tag === "NAME") { cur.name = val.trim(); sink = { obj: cur, key: "name" }; }
       if (tag === "SEX") cur.sex = val.toLowerCase();
-      if (tag === "NOTE") cur.note = [cur.note, val.trim()].filter(Boolean).join(" ");
-      if (tag === "SOUR" && val.trim()) cur.sour = [cur.sour, val.trim()].filter(Boolean).join(" | ");
+      if (tag === "NOTE") { cur.note = [cur.note, val.trim()].filter(Boolean).join("\n"); sink = { obj: cur, key: "note" }; }
+      if (tag === "SOUR" && val.trim()) { cur.sour = [cur.sour, val.trim()].filter(Boolean).join(" | "); sink = { obj: cur, key: "sour" }; }
       if (tag === "FAMS" || tag === "FAMC") (cur[tag] = cur[tag] || []).push(val.replace(/@/g, ""));
       if (tag === "HUSB" || tag === "WIFE") cur[tag] = val.replace(/@/g, "");
       if (tag === "CHIL") (cur.CHIL = cur.CHIL || []).push(val.replace(/@/g, ""));
       cur.events[tag] = cur.events[tag] || {};
     }
-    if (lvl === "2" && ctx) { cur.events[ctx] = cur.events[ctx] || {}; cur.events[ctx][tag] = val; }
+    if (lvl === "2" && ctx) {
+      cur.events[ctx] = cur.events[ctx] || {};
+      cur.events[ctx][tag] = val;
+      sink = { obj: cur.events[ctx], key: tag };
+    }
   }
 
   const fams = recs.filter(r => r.tag === "FAM");

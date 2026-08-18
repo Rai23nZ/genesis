@@ -14,11 +14,13 @@
 <script src="./vendor/d3.min.js" integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"></script>
 <script src="./vendor/topojson-client.min.js" integrity="sha384-Ukv1p/xTma6P4/2bY5KzWBw+ydSpXmhCMtyciIQVDJ1RmOxtCYNMF1uXT9T63H67"></script>
 <style>
-  :root { --font-heading: "Bitter", Georgia, serif; --font-body: "Manrope", system-ui, sans-serif; }
+  /* Шрифты и веса задаёт styles.css — единственный источник правды по виду.
+     Раньше здесь стоял свой :root с теми же переменными; он шёл после
+     styles.css и молча перебивал дизайн-систему, из-за чего часть токенов
+     не действовала вовсе. */
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--color-surface); }
   body, #root { height: 100vh; overflow: hidden; }
-  h1, h2, h3, h4 { font-family: var(--font-heading); font-weight: 700; }
   a { color: var(--color-accent); text-decoration: none; }
   a:hover { color: var(--color-accent-700); text-decoration: underline; }
   input, textarea, select, button { font-family: inherit; }

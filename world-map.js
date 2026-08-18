@@ -89,7 +89,31 @@
           resizeTimer = setTimeout(() => this.draw(), 120);
         }).observe(this);
       } catch (e) {
-        const s = this.$("[data-status]"); if (s) s.textContent = "Не удалось загрузить карту";
+        // Раньше любая беда сводилась к одной строке «Не удалось загрузить
+        // карту», и по ней нельзя было понять, чего не хватает: файла в
+        // vendor/, топологии или доступа к сети. Теперь причина названа —
+        // именно с ней человек идёт к vendor.sh или к настройкам сервера.
+        const box = this.$("[data-status]");
+        let why = "Не удалось загрузить карту";
+        if (!window.d3 || !window.topojson) {
+          const miss = [!window.d3 && "d3", !window.topojson && "topojson"].filter(Boolean).join(" и ");
+          why = "Нет библиотек " + miss + " в vendor/ — запустите tools/vendor.sh. " +
+            "Если файлы на месте, их отклонил браузер: не сошёлся хэш integrity в index.html.";
+        } else if (/HTTP|fetch|NetworkError|Failed/i.test(String(e && e.message))) {
+          why = "Библиотеки на месте, но не читается топология карты (" + TOPO + "): " + (e && e.message);
+        } else if (e && e.message) {
+          why = "Карта не построилась: " + e.message;
+        }
+        if (box) {
+          box.textContent = why;
+          box.style.textTransform = "none";
+          box.style.letterSpacing = "0";
+          box.style.lineHeight = "1.5";
+          box.style.padding = "0 28px";
+          box.style.textAlign = "center";
+          box.style.maxWidth = "520px";
+          box.style.margin = "0 auto";
+        }
         console.error(e);
       }
     }

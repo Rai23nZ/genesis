@@ -2,167 +2,90 @@
   "format": "family-tree-archive",
   "version": 1,
   "title": "Демонстрационное древо",
-  "notice": "Синтетический набор для локального запуска. Персональных данных не содержит. Реальный архив живёт в базе на сервере и приходит через /api/archive.",
+  "notice": "Синтетический набор для локального запуска. Персональных данных не содержит: фамилии, места и даты выдуманы. Реальный архив живёт в базе на сервере и приходит через /api/archive.",
   "places": {
-    "Город A": [55.75, 37.62],
-    "Город B": [59.94, 30.31],
-    "Город C": [56.84, 60.61],
-    "Город D": [55.03, 82.92],
-    "Город E": [52.52, 13.4],
-    "Город F": [50.09, 14.42],
-    "Город G": [43.65, -79.38]
+    "с. Верхние Ключи": [55.75, 37.62],
+    "г. Заречный": [59.94, 30.31],
+    "пос. Сосновка": [56.84, 60.61],
+    "г. Северск": [55.03, 82.92]
   },
   "people": [
-    {
-      "id": "p1", "name": "Предок I-1", "sex": "m", "gen": 0,
-      "birth": { "date": "1900-01-01", "place": "Город A" },
-      "death": { "date": "1970-01-01", "place": "Город A" },
-      "occupation": "Профессия 1", "employer": "Место работы 1", "education": "Учебное заведение 1",
-      "residences": [{ "place": "Город A", "from": 1900, "to": 1970 }],
-      "photos": [{ "caption": "Фотография 1", "year": 1930 }, { "caption": "Фотография 2", "year": 1948 }],
-      "documents": ["Документ 1"], "sources": ["Источник 1"],
-      "notes": "Текстовая заметка карточки.",
-      "spouse": ["p2"], "parents": []
-    },
-    {
-      "id": "p2", "name": "Предок I-2", "maiden": "Девичья 1", "sex": "f", "gen": 0,
-      "birth": { "date": "1904-01-01", "place": "Город A" },
-      "death": { "date": "1980-01-01", "place": "Город A" },
-      "occupation": "Профессия 2",
-      "residences": [{ "place": "Город A", "from": 1904, "to": 1980 }],
-      "photos": [{ "caption": "Фотография 3", "year": 1935 }],
-      "documents": [], "sources": [], "notes": "",
-      "spouse": ["p1"], "parents": []
-    },
-    {
-      "id": "p3", "name": "Предок I-3", "sex": "m", "gen": 0,
-      "birth": { "date": "1898-01-01", "place": "Город B" },
-      "death": { "date": "1965-01-01", "place": "Город B" },
-      "occupation": "Профессия 3",
-      "residences": [{ "place": "Город B", "from": 1898, "to": 1965 }],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "spouse": ["p4"], "parents": []
-    },
-    {
-      "id": "p4", "name": "Предок I-4", "maiden": "Девичья 2", "sex": "f", "gen": 0,
-      "birth": { "date": "1906-01-01", "place": "Город B" },
-      "death": { "date": "1985-01-01", "place": "Город C" },
-      "occupation": "Профессия 4",
-      "residences": [
-        { "place": "Город B", "from": 1906, "to": 1950 },
-        { "place": "Город C", "from": 1950, "to": 1985, "note": "переезд" }
-      ],
-      "photos": [{ "caption": "Фотография 4", "year": 1952 }],
-      "documents": [], "sources": [], "notes": "",
-      "spouse": ["p3"], "parents": []
-    },
-    {
-      "id": "p5", "name": "Потомок II-1", "sex": "m", "gen": 1,
-      "birth": { "date": "1930-01-01", "place": "Город A" },
-      "death": { "date": "2000-01-01", "place": "Город C" },
-      "occupation": "Профессия 5", "employer": "Место работы 2", "education": "Учебное заведение 2",
-      "residences": [
-        { "place": "Город A", "from": 1930, "to": 1955 },
-        { "place": "Город C", "from": 1955, "to": 2000 }
-      ],
-      "photos": [{ "caption": "Фотография 5", "year": 1958 }, { "caption": "Фотография 6", "year": 1976 }],
-      "documents": ["Документ 2"], "sources": [], "notes": "Текстовая заметка карточки.",
-      "spouse": ["p6"], "parents": ["p1", "p2"]
-    },
-    {
-      "id": "p6", "name": "Потомок II-2", "maiden": "Девичья 3", "sex": "f", "gen": 1,
-      "birth": { "date": "1932-01-01", "place": "Город B" },
-      "death": { "date": "2010-01-01", "place": "Город C" },
-      "occupation": "Профессия 6",
-      "residences": [
-        { "place": "Город B", "from": 1932, "to": 1955 },
-        { "place": "Город C", "from": 1955, "to": 2010 }
-      ],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "spouse": ["p5"], "parents": ["p3", "p4"]
-    },
-    {
-      "id": "p7", "name": "Потомок II-3", "sex": "f", "gen": 1,
-      "birth": { "date": "1936-01-01", "place": "Город A" },
-      "death": { "date": "2015-01-01", "place": "Город E" },
-      "occupation": "Профессия 7",
-      "residences": [
-        { "place": "Город A", "from": 1936, "to": 1990 },
-        { "place": "Город E", "from": 1990, "to": 2015 }
-      ],
-      "photos": [{ "caption": "Фотография 7", "year": 1991 }],
-      "documents": [], "sources": [], "notes": "",
-      "spouse": [], "parents": ["p1", "p2"]
-    },
-    {
-      "id": "p8", "name": "Потомок III-1", "sex": "m", "gen": 2,
-      "birth": { "date": "1958-01-01", "place": "Город C" },
-      "occupation": "Профессия 8", "education": "Учебное заведение 3",
-      "residences": [
-        { "place": "Город C", "from": 1958, "to": 1995 },
-        { "place": "Город F", "from": 1995 }
-      ],
-      "photos": [{ "caption": "Фотография 8", "year": 1980 }],
-      "documents": [], "sources": [], "notes": "",
-      "living": true, "spouse": ["p9"], "parents": ["p5", "p6"]
-    },
-    {
-      "id": "p9", "name": "Потомок III-2", "maiden": "Девичья 4", "sex": "f", "gen": 2,
-      "birth": { "date": "1960-01-01", "place": "Город D" },
-      "occupation": "Профессия 9",
-      "residences": [
-        { "place": "Город D", "from": 1960, "to": 1995 },
-        { "place": "Город F", "from": 1995 }
-      ],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "living": true, "spouse": ["p8"], "parents": []
-    },
-    {
-      "id": "p10", "name": "Потомок III-3", "sex": "f", "gen": 2,
-      "birth": { "date": "1963-01-01", "place": "Город C" },
-      "occupation": "Профессия 10",
-      "residences": [{ "place": "Город C", "from": 1963 }],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "living": true, "spouse": [], "parents": ["p5", "p6"]
-    },
-    {
-      "id": "p11", "name": "Потомок IV-1", "sex": "m", "gen": 3,
-      "birth": { "date": "1986-01-01", "place": "Город F" },
-      "occupation": "Профессия 11",
-      "residences": [
-        { "place": "Город F", "from": 1986, "to": 2012 },
-        { "place": "Город G", "from": 2012 }
-      ],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "living": true, "spouse": [], "parents": ["p8", "p9"]
-    },
-    {
-      "id": "p12", "name": "Потомок IV-2", "sex": "f", "gen": 3,
-      "birth": { "date": "1990-01-01", "place": "Город F" },
-      "occupation": "Профессия 12",
-      "residences": [{ "place": "Город F", "from": 1990 }],
-      "photos": [], "documents": [], "sources": [], "notes": "",
-      "living": true, "spouse": [], "parents": ["p8", "p9"]
-    }
+    { "id": "p1", "surname": "Ветров", "name": "Аким", "patronymic": "Прохорович", "sex": "m",
+      "status": "unknown", "birthDate": "ок. 1898", "birthPlace": "с. Верхние Ключи",
+      "deathDate": "1961", "deathPlace": "с. Верхние Ключи", "bio": "Кузнец. Самый ранний известный предок по мужской линии.",
+      "spouseIds": ["p2"],
+      "residences": [{ "place": "с. Верхние Ключи", "from": 1898, "to": 1961 }] },
+
+    { "id": "p2", "surname": "Ветрова", "name": "Пелагея", "patronymic": "Ниловна", "maidenName": "Гущина", "sex": "f",
+      "status": "unknown", "birthDate": "1902", "birthPlace": "с. Верхние Ключи",
+      "deathDate": "1978", "deathPlace": "г. Заречный",
+      "spouseIds": ["p1"],
+      "residences": [{ "place": "с. Верхние Ключи", "from": 1902 }, { "place": "г. Заречный", "to": 1978 }] },
+
+    { "id": "p3", "surname": "Зорин", "name": "Тихон", "patronymic": "Саввич", "sex": "m",
+      "status": "hypothesis", "birthDate": "1900", "deathDate": "до 1965",
+      "bio": "Связь с линией Зориных подтверждается только рассказом внучки.",
+      "sources": "Устное свидетельство, 1998 г.",
+      "spouseIds": ["p4"], "residences": [] },
+
+    { "id": "p4", "surname": "Зорина", "name": "???", "sex": "f",
+      "status": "unknown", "bio": "Имя не восстановлено. Известно только, что она мать Зинаиды Тихоновны.",
+      "spouseIds": ["p3"], "residences": [] },
+
+    { "id": "p5", "surname": "Ветров", "name": "Гаврил", "patronymic": "Акимович", "sex": "m",
+      "status": "confirmed", "birthDate": "14.03.1926", "birthPlace": "с. Верхние Ключи",
+      "deathDate": "02.11.1994", "deathPlace": "г. Заречный",
+      "bio": "Мастер на лесопилке.", "sources": "Метрическая запись; свидетельство о смерти.",
+      "fatherId": "p1", "motherId": "p2", "spouseIds": ["p6"],
+      "residences": [{ "place": "с. Верхние Ключи", "from": 1926 }, { "place": "г. Заречный", "from": 1958, "to": 1994 }] },
+
+    { "id": "p6", "surname": "Ветрова", "name": "Зинаида", "patronymic": "Тихоновна", "maidenName": "Зорина", "sex": "f",
+      "status": "confirmed", "birthDate": "27.08.1930", "birthPlace": "пос. Сосновка",
+      "deathDate": "19.05.2011", "deathPlace": "г. Заречный", "bio": "Учительница начальных классов.",
+      "fatherId": "p3", "motherId": "p4", "spouseIds": ["p5"],
+      "residences": [{ "place": "пос. Сосновка", "from": 1930 }, { "place": "г. Заречный", "from": 1958, "to": 2011 }] },
+
+    { "id": "p7", "surname": "Ветрова", "name": "Клавдия", "patronymic": "Акимовна", "sex": "f",
+      "status": "unknown", "birthDate": "1929", "deathDate": "2003", "deathPlace": "г. Северск",
+      "fatherId": "p1", "motherId": "p2", "spouseIds": ["p8"],
+      "residences": [{ "place": "г. Северск", "from": 1952, "to": 2003 }] },
+
+    { "id": "p8", "surname": "Лапин", "name": "Ефим", "patronymic": "Мартынович", "sex": "m",
+      "status": "unknown", "birthDate": "1924", "deathDate": "1988", "deathPlace": "г. Северск",
+      "bio": "О родителях сведений нет.", "spouseIds": ["p7"], "residences": [] },
+
+    { "id": "p9", "surname": "Ветров", "name": "Родион", "patronymic": "Гаврилович", "sex": "m",
+      "status": "confirmed", "birthDate": "05.06.1955", "birthPlace": "г. Заречный",
+      "deathDate": "12.02.2019", "deathPlace": "г. Заречный", "bio": "Инженер-путеец.",
+      "sources": "Свидетельство о рождении; трудовая книжка.",
+      "fatherId": "p5", "motherId": "p6", "spouseIds": ["p12"],
+      "residences": [{ "place": "г. Заречный", "from": 1955, "to": 2019 }] },
+
+    { "id": "p10", "surname": "Ветрова", "name": "Нина", "patronymic": "Гавриловна", "sex": "f",
+      "status": "unknown", "birthDate": "1958", "birthPlace": "г. Заречный",
+      "fatherId": "p5", "motherId": "p6", "living": true, "spouseIds": [], "residences": [] },
+
+    { "id": "p11", "surname": "Лапина", "name": "Ольга", "patronymic": "Ефимовна", "sex": "f",
+      "status": "unknown", "birthDate": "1953", "deathDate": "2015", "deathPlace": "г. Северск",
+      "fatherId": "p8", "motherId": "p7", "spouseIds": [], "residences": [] },
+
+    { "id": "p12", "surname": "Ветрова", "name": "Мария", "patronymic": "Игнатьевна", "maidenName": "Дроздова", "sex": "f",
+      "status": "unknown", "birthDate": "1957", "deathDate": "2020", "deathPlace": "г. Заречный",
+      "bio": "Родители неизвестны: семья потеряла связь с линией Дроздовых.",
+      "spouseIds": ["p9"], "residences": [] },
+
+    { "id": "p13", "surname": "Ветров", "name": "Артём", "patronymic": "Родионович", "sex": "m",
+      "status": "confirmed", "birthDate": "1982", "birthPlace": "г. Заречный",
+      "fatherId": "p9", "motherId": "p12", "living": true, "spouseIds": [], "residences": [] },
+
+    { "id": "p14", "surname": "Ветрова", "name": "Дарья", "patronymic": "Родионовна", "sex": "f",
+      "status": "unknown", "birthDate": "1986", "birthPlace": "г. Заречный",
+      "fatherId": "p9", "motherId": "p12", "living": true, "spouseIds": [], "residences": [] }
   ],
   "moderation": [
-    {
-      "id": "m1", "author": "Автор 1", "role": "родственник", "date": "2026-01-05T10:00:00",
-      "target": "p5", "targetName": "Потомок II-1", "kind": "edit",
-      "summary": "Уточнение полей карточки",
-      "changes": [
-        { "field": "Профессия", "before": "Профессия 5", "after": "Профессия 5 (уточнено)" },
-        { "field": "Заметки", "before": "—", "after": "Текст правки." }
-      ]
-    },
-    {
-      "id": "m2", "author": "Автор 2", "role": "родственник", "date": "2026-01-04T10:00:00",
-      "target": "p1", "targetName": "Предок I-1", "kind": "photo",
-      "summary": "Добавление фотографий",
-      "changes": [
-        { "field": "Галерея", "before": "2 фото", "after": "4 фото" },
-        { "field": "Подпись", "before": "—", "after": "Фотография 9" }
-      ]
-    }
+    { "id": "m1", "author": "Родственник", "role": "родственник", "date": "2026-02-11T10:00:00",
+      "target": "p7", "targetName": "Ветрова Клавдия Акимовна", "kind": "edit",
+      "summary": "Уточнение места смерти по справке из архива ЗАГС",
+      "changes": [{ "field": "Место смерти", "before": "", "after": "г. Северск" }] }
   ]
 }
