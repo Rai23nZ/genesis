@@ -197,6 +197,11 @@ class App extends React.Component {
   // но по большому древу удобнее возить рукой.
   startPan(e) {
     if (e.button !== 0) return;
+    // Без этого браузер начинает выделять текст, и протаскивание руки по древу
+    // подсвечивает содержимое всех карточек, попавших в маршрут прокрутки.
+    // Читать карточку целиком всё равно идут в боковую панель, где выделение
+    // работает как обычно.
+    e.preventDefault();
     const box = e.currentTarget;
     const from = { x: e.clientX, y: e.clientY, left: box.scrollLeft, top: box.scrollTop };
     this._panned = false;
@@ -289,7 +294,15 @@ class App extends React.Component {
     // Версия карточки на момент открытия правки. Сервер её ведёт; отправляя
     // её обратно, клиент даёт серверу возможность заметить, что за это время
     // карточку изменил кто-то ещё, и ответить 409 вместо тихой перезаписи.
-    this.setState({ form: { id: person ? person.id : null, baseVersion: person ? person.version : undefined, fields, photos: [] }, editing: true });
+    // Уже сохранённые снимки заезжают в форму наравне с новыми, иначе убрать
+    // или перекадрировать их было негде: галерея показывала только то, что
+    // добавили в этот заход. Признак saved отделяет их при отправке — новые
+    // уходят загрузкой, сохранённые правкой.
+    const photos = (person ? (person.photos || []) : []).map(ph => ({
+      uid: ph.uid || ph.id, id: ph.id, saved: true,
+      src: ph.src, full: ph.full, caption: ph.caption || "", focus: ph.focus || ""
+    }));
+    this.setState({ form: { id: person ? person.id : null, baseVersion: person ? person.version : undefined, fields, photos }, editing: true });
   }
 
   setField(k, v) {
@@ -342,16 +355,42 @@ class App extends React.Component {
       fields[k] = now;
       changes.push({ field: LABEL[k] || k, before: show(k, was), after: show(k, now) });
     });
-    const photos = f.photos || [];
-    if (!changes.length && !photos.length) { this.setState({ form: null, editing: false }); return this.flash("Изменений нет"); }
+    // Галерея разъезжается на два маршрута: новые снимки грузятся файлом,
+    // уже сохранённые правятся по идентификатору. Раньше в форму попадали
+    // только новые, поэтому убрать или перекадрировать сохранённый было нечем.
+    const all = f.photos || [];
+    const fresh = all.filter(x => !x.saved);
+    const was = new Map(((s.people || []).find(x => x.id === f.id) || {}).photos
+      ? ((s.people || []).find(x => x.id === f.id).photos).map(x => [x.id, x]) : []);
+    const ops = all.filter(x => x.saved && x.id).map(x => {
+      if (x.remove) return { id: x.id, remove: true };
+      const before = was.get(x.id) || {};
+      const op = { id: x.id };
+      if ((x.caption || "") !== (before.caption || "")) op.caption = x.caption || "";
+      if ((x.focus || "") !== (before.focus || "") && x.focus) op.focus = x.focus;
+      return (op.caption !== undefined || op.focus !== undefined) ? op : null;
+    }).filter(Boolean);
+
+    if (!changes.length && !fresh.length && !ops.length) { this.setState({ form: null, editing: false }); return this.flash("Изменений нет"); }
 
     this.setState({ form: null, editing: false });
     // Снимки уходят отдельным маршрутом: файл — не утверждение о человеке,
     // он сохраняется сразу, а поля карточки идут обычным путём через роль.
-    const sendPhotos = photos.length
-      ? this.m.apiUploadPhotos(f.id, photos.map(x => ({ full: x.full, thumb: x.src, caption: x.caption })))
+    const sendPhotos = fresh.length
+      ? this.m.apiUploadPhotos(f.id, fresh.map(x => ({ full: x.full, thumb: x.src, caption: x.caption, focus: x.focus })))
           .then((r) => this.flash("Снимков сохранено: " + r.added))
           .catch((err) => this.flash("Снимки не сохранились: " + err.message))
+      : Promise.resolve();
+
+    const editPhotos = ops.length
+      ? this.m.apiUpdatePhotos(f.id, ops)
+          .then((r) => {
+            const said = [r.removed ? "удалено " + r.removed : "", r.changed ? "изменено " + r.changed : ""].filter(Boolean).join(", ");
+            if (said) this.flash("Галерея: " + said);
+          })
+          .catch((err) => this.flash(err.status === 403
+            ? "Убирать и перекадрировать снимки может только модератор"
+            : "Галерея не изменилась: " + err.message))
       : Promise.resolve();
 
     const sendFields = changes.length
@@ -362,7 +401,7 @@ class App extends React.Component {
             : "Не удалось отправить правку: " + err.message))
       : Promise.resolve();
 
-    return sendPhotos.then(() => sendFields).then(() => this.reload());
+    return sendPhotos.then(() => editPhotos).then(() => sendFields).then(() => this.reload());
   }
 
   // Удаление правит древо у всех, кто ссылался на карточку, поэтому спрашиваем
@@ -773,7 +812,7 @@ class App extends React.Component {
       return h("div", { key: p.id, className: "unfold", style: { position: "absolute", left: n.x + "px", top: n.y + "px", width: n.w + "px", height: n.h + "px", opacity: on ? 1 : 0.22, transition: "opacity .2s", animationDelay: (n.depth * 40) + "ms" } },
         h("div", { className: "node-card", onClick: () => { if (this._panned) return; this.select(p.id); }, title: vis ? m.fio(p) : "Живущий человек — карточка скрыта",
           style: { display: "flex", height: "100%", boxSizing: "border-box", background: "linear-gradient(var(--color-neutral-100),var(--color-neutral-200))", border: "1px solid " + (isSel ? accent : isKin ? "var(--color-accent)" : "var(--ink-30)"), borderRadius: "var(--radius-md)", borderLeft: "5px solid " + edge, cursor: "pointer", position: "relative", boxShadow: isSel ? "0 6px 18px var(--accent-2-22), 0 0 0 1px " + accent : isKin ? "0 0 0 1px var(--color-accent)" : "0 2px 6px var(--ink-08), 2px 2px 0 var(--ink-05)" } },
-          h("div", { style: { width: "58px", flex: "none", margin: "10px 11px 10px 10px", background: ph ? "#000" : (vis ? "linear-gradient(135deg,var(--color-neutral-200),var(--color-neutral-300))" : "var(--ink-05)"), backgroundImage: ph ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", borderRadius: "var(--radius-sm)", border: "1px solid var(--ink-20)", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "13px", color: "var(--ink-65)" } }, vis ? (ph ? "" : m.initials(p)) : "•"),
+          h("div", { style: { width: "58px", flex: "none", margin: "10px 11px 10px 10px", background: ph ? "#000" : (vis ? "linear-gradient(135deg,var(--color-neutral-200),var(--color-neutral-300))" : "var(--ink-05)"), backgroundImage: ph ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: (ph && ph.focus) || "center", borderRadius: "var(--radius-sm)", border: "1px solid var(--ink-20)", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "13px", color: "var(--ink-65)" } }, vis ? (ph ? "" : m.initials(p)) : "•"),
           h("div", { style: { flex: 1, minWidth: 0, padding: "11px 12px 10px 0", display: "flex", flexDirection: "column", justifyContent: "center" } },
             h("div", { style: { flex: "none", fontSize: "14.5px", fontWeight: 600, lineHeight: 1.15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? (p.surname || "—") : "Скрыто"),
             h("div", { style: { flex: "none", fontSize: "13px", lineHeight: 1.2, marginTop: "1px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } }, vis ? [p.name, p.patronymic].filter(Boolean).join(" ") : ""),
@@ -783,7 +822,7 @@ class App extends React.Component {
     });
     return h("div", { style: { flex: 1, position: "relative", overflow: "hidden" } },
       h("div", { "data-scroll": "", ref: (el) => { this._scroll = el; }, onMouseDown: (e) => this.startPan(e),
-        style: { position: "absolute", inset: 0, overflow: "auto", cursor: s.panning ? "grabbing" : "grab", background: "var(--paper-grain), radial-gradient(120% 90% at 30% 0%,var(--color-neutral-100),var(--color-surface) 70%,var(--color-neutral-300))" } },
+        style: { position: "absolute", inset: 0, overflow: "auto", userSelect: "none", WebkitUserSelect: "none", cursor: s.panning ? "grabbing" : "grab", background: "var(--paper-grain), radial-gradient(120% 90% at 30% 0%,var(--color-neutral-100),var(--color-surface) 70%,var(--color-neutral-300))" } },
         h("div", { style: { position: "absolute", inset: 0, backgroundImage: BACKDROP(1200, 900), backgroundRepeat: "no-repeat", backgroundPosition: "center bottom", backgroundSize: "min(90%, 1100px) auto", pointerEvents: "none" } }),
         // Отступ постоянный. Раньше он раздвигался с 80 до 540 пикселей, когда
         // открывалась боковая карточка, — и всё древо пересчитывалось и уезжало
@@ -1099,7 +1138,7 @@ class App extends React.Component {
 
       vis ? h("div", { style: { padding: "0 26px 40px" } },
         (p.photos || []).length ? h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "8px", margin: "20px 0 8px" } },
-          (p.photos || []).map((ph, i) => h("div", { key: ph.uid || ("src" + String(ph.src || "").slice(-40)), style: { aspectRatio: "3/4", background: ph.src ? "#000" : "linear-gradient(135deg,var(--color-neutral-200),var(--color-neutral-300))", backgroundImage: ph.src ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: "center", border: "1px solid var(--ink-20)", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "7px", position: "relative" } },
+          (p.photos || []).map((ph, i) => h("div", { key: ph.uid || ("src" + String(ph.src || "").slice(-40)), style: { aspectRatio: "3/4", background: ph.src ? "#000" : "linear-gradient(135deg,var(--color-neutral-200),var(--color-neutral-300))", backgroundImage: ph.src ? "url(" + ph.src + ")" : undefined, backgroundSize: "cover", backgroundPosition: ph.focus || "center", border: "1px solid var(--ink-20)", display: "flex", flexDirection: "column", justifyContent: "flex-end", padding: "7px", position: "relative" } },
             ph.src ? null : h("div", { style: { position: "absolute", inset: 0, display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "9px", letterSpacing: ".14em", color: "var(--ink-65)" } }, "ФОТО"),
             ph.caption ? h("div", { style: { position: "relative", fontSize: "10.5px", lineHeight: 1.3, color: "var(--color-text)", background: "var(--color-neutral-100)", padding: "3px 5px" } }, ph.caption) : null))) : null,
 
@@ -1204,11 +1243,38 @@ class App extends React.Component {
               h("input", { type: "checkbox", checked: !!v.minor, onChange: (e) => this.setField("minor", e.target.checked) }), "несовершеннолетний")) : null,
 
           h("div", { style: { borderTop: "1px solid var(--color-text)", margin: "8px 0 12px", paddingTop: "12px" } }, this.kicker("Фотографии")),
-          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: "7px" } },
-            (f.photos || []).map((ph, i) => h("div", { key: ph.uid || ("src" + String(ph.src || "").slice(-40)), style: { position: "relative", aspectRatio: "3/4", background: "#000", backgroundImage: "url(" + ph.src + ")", backgroundSize: "cover", backgroundPosition: "center", border: "1px solid var(--ink-20)" } },
-              h("button", { onClick: () => this.setState({ form: { ...f, photos: f.photos.filter((_, j) => j !== i) } }), title: "Убрать", style: { position: "absolute", right: "3px", top: "3px", width: "18px", height: "18px", border: "none", background: "var(--ink-80)", color: "#fff", fontSize: "11px", cursor: "pointer" } }, "×"),
-              h("input", { value: ph.caption, onChange: (e) => { const arr = f.photos.slice(); arr[i] = { ...arr[i], caption: e.target.value }; this.setState({ form: { ...f, photos: arr } }); }, placeholder: "подпись",
-                style: { position: "absolute", left: 0, right: 0, bottom: 0, width: "100%", boxSizing: "border-box", border: "none", background: "var(--color-neutral-100)", font: "inherit", fontSize: "9.5px", padding: "3px 4px", color: "var(--color-text)", outline: "none" } }))),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "9px" } },
+            (f.photos || []).map((ph, i) => {
+              const patch = (next) => { const arr = f.photos.slice(); arr[i] = { ...arr[i], ...next }; this.setState({ form: { ...f, photos: arr } }); };
+              const drop = () => {
+                // Сохранённый снимок помечается к удалению и уезжает правкой,
+                // новый достаточно выбросить из черновика — на сервере его нет.
+                const arr = ph.saved
+                  ? f.photos.map((x, j) => j === i ? { ...x, remove: !x.remove } : x)
+                  : f.photos.filter((_, j) => j !== i);
+                this.setState({ form: { ...f, photos: arr } });
+              };
+              // Кадрирование: щелчок по снимку назначает точку, которая
+              // останется в кадре при обрезке. Карточка на древе почти
+              // квадратная, галерея — вытянутая, и центр по умолчанию годится
+              // не всякому портрету: лицо в углу срезалось.
+              const setFocus = (e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                const x = Math.round(((e.clientX - r.left) / r.width) * 1000) / 10;
+                const y = Math.round(((e.clientY - r.top) / r.height) * 1000) / 10;
+                patch({ focus: Math.min(100, Math.max(0, x)) + "% " + Math.min(100, Math.max(0, y)) + "%" });
+              };
+              return h("div", { key: ph.uid || ph.id || ("src" + String(ph.src || "").slice(-40)),
+                style: { position: "relative", aspectRatio: "3/4", background: "#000", backgroundImage: "url(" + ph.src + ")", backgroundSize: "cover", backgroundPosition: ph.focus || "center", border: "1px solid " + (ph.remove ? "var(--status-hypothesis)" : "var(--ink-20)"), opacity: ph.remove ? 0.4 : 1, cursor: "crosshair" },
+                title: ph.remove ? "Помечен к удалению" : "Щёлкните по снимку, чтобы задать точку кадрирования",
+                onClick: ph.remove ? undefined : setFocus },
+                h("button", { onClick: (e) => { e.stopPropagation(); drop(); },
+                  title: ph.remove ? "Вернуть" : (ph.saved ? "Удалить снимок" : "Убрать из черновика"),
+                  style: { position: "absolute", right: "3px", top: "3px", width: "20px", height: "20px", border: "none", background: ph.remove ? "var(--status-hypothesis)" : "var(--ink-80)", color: "#fff", fontSize: "12px", lineHeight: 1, cursor: "pointer", zIndex: 2 } }, ph.remove ? "↺" : "×"),
+                ph.focus ? h("span", { style: { position: "absolute", left: "calc(" + ph.focus.split(" ")[0] + " - 5px)", top: "calc(" + ph.focus.split(" ")[1] + " - 5px)", width: "10px", height: "10px", borderRadius: "50%", border: "2px solid var(--color-accent-2)", boxShadow: "0 0 0 1px var(--scrim-25)", pointerEvents: "none" } }) : null,
+                h("input", { value: ph.caption, onClick: (e) => e.stopPropagation(), onChange: (e) => patch({ caption: e.target.value }), placeholder: "подпись",
+                  style: { position: "absolute", left: 0, right: 0, bottom: 0, width: "100%", boxSizing: "border-box", border: "none", background: "var(--color-neutral-100)", font: "inherit", fontSize: "9.5px", padding: "3px 4px", color: "var(--color-text)", outline: "none" } }));
+            }),
             h("label", { style: { aspectRatio: "3/4", border: "1px dashed var(--ink-35)", background: "#fff9", display: "grid", placeItems: "center", cursor: "pointer", fontSize: "11px", color: "var(--ink-65)", textAlign: "center", padding: "4px" } }, "+ фото",
               h("input", { type: "file", accept: "image/*", multiple: true, onChange: (e) => this.onDraftPhotos(e), style: { display: "none" } }))),
           h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10px", color: "var(--ink-65)", marginTop: "7px" } },

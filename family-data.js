@@ -121,6 +121,16 @@ export async function apiDeletePerson(personId) {
 // Загрузка фотографий. Снимки пересохраняются в браузере через canvas: это
 // уменьшает файл и заодно уничтожает EXIF — геометка и модель камеры не уезжают
 // вместе со сканом. Сервер всё равно проверяет содержимое сам.
+// Правка галереи уже сохранённых снимков: подпись, кадрирование, удаление.
+// Загрузка (POST) только дописывает в конец и заменить ничего не умеет.
+export async function apiUpdatePhotos(personId, photos) {
+  const base = apiBase();
+  if (!base) throw new Error("offline");
+  return getJson(base + "/api/people/" + encodeURIComponent(personId) + "/photos", {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ photos })
+  });
+}
+
 export async function apiUploadPhotos(personId, photos) {
   const base = apiBase();
   if (!base) throw new Error("offline");
