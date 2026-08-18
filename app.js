@@ -385,12 +385,11 @@ class App extends React.Component {
     const editPhotos = ops.length
       ? this.m.apiUpdatePhotos(f.id, ops)
           .then((r) => {
+            if (r.queued) return this.flash("Предложение по снимкам отправлено модератору");
             const said = [r.removed ? "удалено " + r.removed : "", r.changed ? "изменено " + r.changed : ""].filter(Boolean).join(", ");
             if (said) this.flash("Галерея: " + said);
           })
-          .catch((err) => this.flash(err.status === 403
-            ? "Убирать и перекадрировать снимки может только модератор"
-            : "Галерея не изменилась: " + err.message))
+          .catch((err) => this.flash("Галерея не изменилась: " + err.message))
       : Promise.resolve();
 
     const sendFields = changes.length
@@ -715,10 +714,12 @@ class App extends React.Component {
         h("span", { style: { fontFamily: "var(--font-body)", fontSize: "11px", color: "var(--ink-65)", flex: "none" } }, "Поиск"),
         h("input", { value: s.q, onChange: (e) => this.setState({ q: e.target.value }), placeholder: "фамилия, город, профессия",
           style: { flex: 1, minWidth: "60px", border: "none", borderBottom: "1px solid var(--ink-25)", background: "transparent", font: "inherit", fontSize: "14px", padding: "5px 2px", outline: "none", color: "var(--color-text)" } })),
-      h("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: nw ? "8px 14px 0" : "0 14px", flex: "none", ...(nw ? {} : sep) } },
+      h("div", { style: { display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px", padding: nw ? "8px 14px 0" : "0 14px", flex: nw ? "1 1 100%" : "none", ...(nw ? {} : sep) } },
         h("div", { style: { display: "flex", border: "1px solid var(--ink-15)", flex: "none" } }, ["Гость", "Родственник", "Модератор"].map(roleBtn)),
         // Один архив — несколько взглядов. Древо отвечает «кто чей»,
         // круг — «чего мы не знаем»; вид попадает в адрес наравне с человеком.
+        // flex: none и перенос у родителя обязательны вместе: без переноса на
+        // узком экране этот блок уезжал за край, и «Река» была недостижима.
         h("div", { style: { display: "flex", border: "1px solid var(--ink-15)", flex: "none" } },
           [["tree", "Древо"], ["ring", "Круг"], ["river", "Река"]].map(([v, label]) =>
             h("button", { key: v, onClick: () => this.setState({ view: v }),
@@ -759,7 +760,7 @@ class App extends React.Component {
     const hit = (p) => !q || [p.surname, p.name, p.patronymic, p.maidenName, p.bio, p.birthPlace, p.deathPlace]
       .concat((p.residences || []).map(r => r.place)).filter(Boolean).join(" ").toLowerCase().includes(q);
     const depths = [...new Set(L.nodes.map(n => n.depth))].sort((a, b) => a - b);
-    const bands = depths.map(d => h("div", { key: "band" + d, style: { position: "absolute", left: 0, top: (d * (122 + 92) - 30) + "px", width: L.width + "px", borderTop: "1px dashed var(--ink-15)", paddingTop: "7px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "var(--ink-65)", pointerEvents: "none" } }, "Поколение " + (ROMAN[d] || d + 1) + " · " + L.nodes.filter(n => n.depth === d).length + " человек"));
+    const bands = depths.map(d => h("div", { key: "band" + d, style: { position: "absolute", left: 0, top: (d * (122 + 92) - 30) + "px", width: L.width + "px", borderTop: "1px dashed var(--ink-15)", paddingTop: "7px", fontFamily: "var(--font-body)", fontSize: "9.5px", letterSpacing: ".16em", textTransform: "uppercase", color: "var(--ink-65)", pointerEvents: "none" } }, "Поколение " + (ROMAN[d] || d + 1) + " · " + m.countOf(L.nodes.filter(n => n.depth === d).length, "человек", "человека", "человек")));
     // Связи рисуются одним слоем SVG, а не набором тонких блоков. Полотно
     // масштабируется CSS-преобразованием, и линия толщиной в один пиксель при
     // масштабе 0,82 округлялась до нуля — часть связей просто исчезала и
@@ -836,7 +837,9 @@ class App extends React.Component {
         h("div", { style: { width: "52px", display: "grid", placeItems: "center", fontFamily: "var(--font-body)", fontSize: "11px", color: "var(--ink-65)" } }, Math.round(s.zoom * 100) + "%"),
         h("button", { onClick: () => this.setState({ zoom: Math.min(1.5, s.zoom + 0.12) }), style: { width: "32px", height: "30px", border: "none", borderLeft: "1px solid var(--ink-10)", background: "transparent", fontSize: "16px", cursor: "pointer", color: "var(--color-text)" } }, "+")),
       s.narrow && s.sel ? null : h("div", { style: { position: "absolute", right: "18px", bottom: "18px", fontFamily: "var(--font-body)", fontSize: "10.5px", color: "var(--ink-60)", textAlign: "right", lineHeight: 1.6, background: "var(--color-neutral-100)", border: "1px solid var(--ink-12)", borderRadius: "var(--radius-md)", padding: "8px 13px", boxShadow: "var(--shadow-sm)" } },
-        h("div", null, s.people.length + " человек · " + L.nodes.reduce((a, n) => Math.max(a, n.depth), 0) + " поколения · " + s.people.reduce((a, p) => a + (p.photos || []).length, 0) + " фото"),
+        h("div", null, m.countOf(s.people.length, "человек", "человека", "человек") + " · " +
+          m.countOf(L.nodes.reduce((a, n) => Math.max(a, n.depth), 0) + 1, "поколение", "поколения", "поколений") + " · " +
+          m.countOf(s.people.reduce((a, p) => a + (p.photos || []).length, 0), "снимок", "снимка", "снимков")),
         h("div", null, "роль: " + s.role.toLowerCase() + (s.role === "Гость" ? " · живущие скрыты" : ""))),
       s.sel ? this.renderSidebar() : null,
       s.form ? this.renderPersonForm() : null,
@@ -1026,6 +1029,26 @@ class App extends React.Component {
         letterSpacing: "0.14em", fill: "var(--ink-65)" }, clan.key.toUpperCase()));
       y += 18;
       clan.members.forEach(({ p, s: sp }) => {
+        // Записи без единой даты и без датированной родни разместить на оси
+        // нечем. Они остаются в виде отдельной строкой у левого края: сведения
+        // ещё будут дополняться, и пропавший с полотна человек теряется вернее,
+        // чем ненайденный. Отрезок не рисуется — утверждать о времени нечего.
+        if (!sp) {
+          bars.push(h("g", {
+            key: p.id,
+            style: { cursor: "pointer", opacity: hit(p) ? 1 : 0.24, transition: "opacity .2s" },
+            onClick: () => this.select(p.id),
+            tabIndex: 0, role: "button", "aria-label": m.fio(p) + ", годы неизвестны",
+            onKeyDown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); this.select(p.id); } }
+          },
+            h("title", null, m.fio(p) + " · годы неизвестны: разместить на оси нечем"),
+            h("rect", { x: 0, y: y, width: PADL - 10, height: BAR, rx: 3, fill: "none", stroke: "var(--ink-25)", strokeDasharray: "2 4" }),
+            h("text", { x: 6, y: y + 11.5, fontFamily: "var(--font-body)", fontSize: 11, fill: "var(--ink-65)", style: { pointerEvents: "none" } },
+              (!p.name || p.name === "???") ? (p.surname || "без имени") : m.shortName(p)),
+            h("text", { x: PADL - 4, y: y + 11.5, fontFamily: "var(--font-body)", fontSize: 10, fill: "var(--ink-45)", style: { pointerEvents: "none" } }, "годы неизвестны")));
+          y += ROW;
+          return;
+        }
         const x1 = xOf(sp.birth.y), x2 = xOf(sp.death.y), w = Math.max(4, x2 - x1);
         const isSel = p.id === s.sel;
         const dim = hit(p) ? 1 : 0.2;
@@ -1072,9 +1095,12 @@ class App extends React.Component {
         h("div", { style: { maxWidth: "760px", marginBottom: "10px" } },
           this.kicker("Река времени · " + R.min + "–" + R.max),
           h("p", { style: { margin: "8px 0 0", fontSize: "14px", lineHeight: 1.55, color: "var(--ink-65)" } },
-            "Каждая полоса — одна жизнь; длина равна прожитым годам. Точные даты залиты сплошь, приблизительные растворяются по краям. Записей без единой даты — ",
-            h("b", { style: { color: "var(--color-text)" } }, R.inferred + " из " + R.total),
-            ": они показаны пунктиром, а границы выведены из дат родни.")),
+            "Каждая полоса — одна жизнь; длина равна прожитым годам. Точные даты залиты сплошь, приблизительные растворяются по краям. Границы выведены из дат родни у ",
+            h("b", { style: { color: "var(--color-text)" } }, m.countOf(R.inferred, "записи", "записей", "записей")),
+            " из " + R.total + " — они показаны пунктиром.",
+            R.undated ? h("span", null, " Ещё ",
+              h("b", { style: { color: "var(--status-hypothesis)" } }, m.countOf(R.undated, "запись", "записи", "записей")),
+              " разместить на оси нечем: они стоят у левого края и ждут дат.") : null)),
         h("svg", { viewBox: "0 0 " + W + " " + H, role: "img", "aria-label": "Линии жизни рода на оси времени",
           style: { display: "block", width: "100%", height: "auto" } },
           h("defs", null,
@@ -1266,10 +1292,13 @@ class App extends React.Component {
               };
               return h("div", { key: ph.uid || ph.id || ("src" + String(ph.src || "").slice(-40)),
                 style: { position: "relative", aspectRatio: "3/4", background: "#000", backgroundImage: "url(" + ph.src + ")", backgroundSize: "cover", backgroundPosition: ph.focus || "center", border: "1px solid " + (ph.remove ? "var(--status-hypothesis)" : "var(--ink-20)"), opacity: ph.remove ? 0.4 : 1, cursor: "crosshair" },
-                title: ph.remove ? "Помечен к удалению" : "Щёлкните по снимку, чтобы задать точку кадрирования",
+                title: ph.remove
+                  ? (isMod ? "Помечен к удалению" : "Будет предложено убрать — решит модератор")
+                  : (isMod ? "Щёлкните по снимку, чтобы задать точку кадрирования"
+                           : "Щёлкните, чтобы предложить другое кадрирование — решит модератор"),
                 onClick: ph.remove ? undefined : setFocus },
                 h("button", { onClick: (e) => { e.stopPropagation(); drop(); },
-                  title: ph.remove ? "Вернуть" : (ph.saved ? "Удалить снимок" : "Убрать из черновика"),
+                  title: ph.remove ? "Вернуть" : (!ph.saved ? "Убрать из черновика" : (isMod ? "Удалить снимок" : "Предложить удаление — решит модератор")),
                   style: { position: "absolute", right: "3px", top: "3px", width: "20px", height: "20px", border: "none", background: ph.remove ? "var(--status-hypothesis)" : "var(--ink-80)", color: "#fff", fontSize: "12px", lineHeight: 1, cursor: "pointer", zIndex: 2 } }, ph.remove ? "↺" : "×"),
                 ph.focus ? h("span", { style: { position: "absolute", left: "calc(" + ph.focus.split(" ")[0] + " - 5px)", top: "calc(" + ph.focus.split(" ")[1] + " - 5px)", width: "10px", height: "10px", borderRadius: "50%", border: "2px solid var(--color-accent-2)", boxShadow: "0 0 0 1px var(--scrim-25)", pointerEvents: "none" } }) : null,
                 h("input", { value: ph.caption, onClick: (e) => e.stopPropagation(), onChange: (e) => patch({ caption: e.target.value }), placeholder: "подпись",
@@ -1278,7 +1307,8 @@ class App extends React.Component {
             h("label", { style: { aspectRatio: "3/4", border: "1px dashed var(--ink-35)", background: "#fff9", display: "grid", placeItems: "center", cursor: "pointer", fontSize: "11px", color: "var(--ink-65)", textAlign: "center", padding: "4px" } }, "+ фото",
               h("input", { type: "file", accept: "image/*", multiple: true, onChange: (e) => this.onDraftPhotos(e), style: { display: "none" } }))),
           h("div", { style: { fontFamily: "var(--font-body)", fontSize: "10px", color: "var(--ink-65)", marginTop: "7px" } },
-            "Снимок уменьшается в браузере и теряет EXIF ещё до отправки: геометка и модель камеры на сервер не попадают.")),
+            "Снимок уменьшается в браузере и теряет EXIF ещё до отправки: геометка и модель камеры на сервер не попадают.",
+            isMod ? null : h("span", null, " Новый снимок сохраняется сразу; удаление и кадрирование уже сохранённых уходят на проверку модератору."))),
 
         h("div", { style: { display: "flex", gap: "8px", justifyContent: "flex-end", padding: "14px 24px", borderTop: "1px solid var(--color-divider)" } },
           h("button", { onClick: () => this.setState({ form: null, editing: false }), className: "btn btn-secondary" }, "Отмена"),

@@ -209,6 +209,18 @@ export const yearOf = (s) => {
   return m ? Number(m[1]) : null;
 };
 
+// Согласование числительного: «1 человек», «2 человека», «5 человек».
+// Без него интерфейс писал «22 человек» и «5 поколения» — мелочь, но она
+// сразу выдаёт машинный текст в архиве, который люди читают как документ.
+export function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+}
+export const countOf = (n, one, few, many) => n + " " + plural(n, one, few, many);
+
 export const fio = (p) => [p.surname, p.name, p.patronymic].filter(Boolean).join(" ") || "Без имени";
 
 export const shortName = (p) => {
@@ -491,9 +503,15 @@ export function lifeSpan(p, idx, kidsOf, now = new Date().getFullYear()) {
   else if (mates.length) by = mates[0].y;
   else if (parents.length) by = Math.max.apply(null, parents.map(k => k.y)) + GEN_STEP;
   if (by === null) return null;
+  // Живущий не «умирает» через LIFE_SPAN лет после выведенной даты рождения:
+  // без этой проверки отрезки уезжали в 2050-е, а ось растягивалась на
+  // полвека вперёд и сжимала настоящие данные.
+  const end = p.living
+    ? { y: now, lo: now, hi: now, sure: false, open: true }
+    : { y: by + LIFE_SPAN, lo: by + LIFE_SPAN - 12, hi: by + LIFE_SPAN + 12, sure: false };
   return {
     birth: { y: by, lo: by - 10, hi: by + 10, sure: false },
-    death: { y: by + LIFE_SPAN, lo: by + LIFE_SPAN - 12, hi: by + LIFE_SPAN + 12, sure: false },
+    death: end,
     inferred: true, sure: false, living: !!p.living
   };
 }
@@ -514,31 +532,40 @@ export function riverRows(people, { hideLiving = false } = {}) {
     if (id && idx[id]) (kidsOf[id] = kidsOf[id] || []).push(p.id);
   }));
 
-  const placed = [];
+  // Разместить на оси можно не всякого: у части родни нет ни своих дат, ни
+  // родственников с датами. Выбрасывать их из вида нельзя — сведения ещё
+  // будут дополняться, и человек, пропавший с полотна, из архива исчезает
+  // вернее, чем из базы. Они идут отдельной строкой «годы неизвестны».
+  const placed = [], undated = [];
   list.forEach(p => {
     const s = lifeSpan(p, idx, kidsOf);
-    if (s) placed.push({ p, s });
+    if (s) placed.push({ p, s }); else undated.push({ p, s: null });
   });
-  if (!placed.length) return { clans: [], min: 1900, max: 2000, total: 0, dated: 0, inferred: 0 };
+  if (!placed.length && !undated.length) return { clans: [], min: 1900, max: 2000, total: 0, dated: 0, inferred: 0, undated: 0 };
 
   const groups = {};
-  placed.forEach(x => {
+  placed.concat(undated).forEach(x => {
     const k = clanKey(x.p);
     (groups[k] = groups[k] || []).push(x);
   });
+  const order = (x) => x.s ? x.s.birth.y : Infinity;   // безымянные по времени — в конец рода
   const clans = Object.keys(groups)
-    .map(k => ({ key: k, members: groups[k].sort((a, b) => a.s.birth.y - b.s.birth.y) }))
-    .sort((a, b) => a.members[0].s.birth.y - b.members[0].s.birth.y);
+    .map(k => ({ key: k, members: groups[k].sort((a, b) => order(a) - order(b)) }))
+    .sort((a, b) => order(a.members[0]) - order(b.members[0]));
 
-  const lo = Math.min.apply(null, placed.map(x => x.s.birth.lo));
-  const hi = Math.max.apply(null, placed.map(x => x.s.death.hi));
+  const lo = placed.length ? Math.min.apply(null, placed.map(x => x.s.birth.lo)) : 1900;
+  const hi = placed.length ? Math.max.apply(null, placed.map(x => x.s.death.hi)) : 2000;
+  const now = new Date().getFullYear();
   return {
     clans,
     min: Math.floor(lo / 10) * 10 - 10,
-    max: Math.ceil(hi / 10) * 10 + 10,
-    total: placed.length,
+    // Ось не уходит в будущее: жизнь никого из архива за сегодняшний день не
+    // простирается, а выведенные границы могут насчитать лишнего.
+    max: Math.min(Math.ceil(hi / 10) * 10 + 10, Math.ceil((now + 4) / 10) * 10),
+    total: placed.length + undated.length,
     dated: placed.filter(x => !x.s.inferred).length,
-    inferred: placed.filter(x => x.s.inferred).length
+    inferred: placed.filter(x => x.s.inferred).length,
+    undated: undated.length
   };
 }
 
